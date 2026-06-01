@@ -16,6 +16,7 @@ anki-builder = "anki_builder.cli:main"
 
 [dependency-groups]
 dev = [
+    "httpx2>=2.3.0",
     "pytest>=8.0.0",
 ]
 
