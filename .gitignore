@@ -1,0 +1,19 @@
+# Data (downloaded dumps + built DB) — never committed
+data/dumps/
+data/*.db
+data/media/
+
+# Secrets / local config
+.env
+.env.*
+!.env.example
+config.toml
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.venv/
+
+# uv.lock IS tracked (reproducible env) — do not ignore it

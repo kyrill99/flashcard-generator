@@ -1,0 +1,45 @@
+# Personal Anki Card Builder — example config.
+# Copy to config.toml and edit. config.toml is gitignored.
+# In this foundation pass only [languages], [paths], and [ranking] are read;
+# [anki], [llm], and [tts] are declared now for the later integration pass.
+
+[languages]
+# Target language to mine sentences for, and the base/translation language (D6).
+# Tatoeba ISO 639-3 codes. English ("eng") has the best coverage as the base.
+target_lang = "spa"
+base_lang = "eng"
+
+[paths]
+# SQLite DB (corpus + review_queue) and where dumps / cached audio live.
+db_path = "data/tatoeba.db"
+dumps_dir = "data/dumps"
+media_cache = "data/media"
+
+[ranking]
+# D13 ranking weights. Lower/shorter sentences preferred; native-contributed
+# audio gets a boost. Tunable without code changes.
+length_weight = 1.0          # penalty per character of the Spanish sentence
+word_count_weight = 2.0      # penalty per token (favours simpler sentences)
+native_audio_boost = 50.0    # bonus when the audio contributor is a spa native
+ideal_min_words = 4          # sentences shorter than this are mildly penalised
+ideal_max_words = 12         # sentences longer than this are penalised
+candidates_kept = 8          # how many ranked candidates to keep for review swap
+
+[anki]
+# Used in the later pass (AnkiConnect). Declared now for completeness.
+deck = "Spanish::Mining"
+note_type = "AnkiBuilder Spanish"
+connect_url = "http://127.0.0.1:8765"
+
+[llm]
+# D4 — OpenAI-compatible client. Model + base_url are config so you can point at
+# OpenAI, OpenRouter, or a local server. Must be vision-capable (v1.1 reuse).
+# OPENAI_API_KEY comes from the environment / .env, never this file.
+model = "gpt-4o-mini"
+base_url = "https://api.openai.com/v1"
+fallback_enabled = true
+
+[tts]
+# Fallback audio only (Tatoeba audio is preferred). Spanish voice.
+voice = "alloy"
+model = "gpt-4o-mini-tts"
