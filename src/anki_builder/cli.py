@@ -3,11 +3,12 @@
     anki-builder fetch-dumps         download Tatoeba dumps
     anki-builder build-db            one-time ingest into SQLite
     anki-builder run --word comer    search -> filter -> rank -> select -> enqueue
-    anki-builder review / push       (stubbed; arrive in the next pass)
+    anki-builder review              launch the local review web app (the D2 gate)
+    anki-builder push [--dry-run]    push accepted review_queue rows into Anki
 
-`run` is the search/build/enqueue stage. The mandatory review gate and the push
-to Anki are deferred, so `run` stops at writing review_queue rows and printing a
-per-word summary.
+`run` mines into the review_queue; `review` is the mandatory human gate (D2);
+`push` (or the review app's buttons) sends accepted cards to Anki via
+AnkiConnect (D10/D12).
 """
 
 from __future__ import annotations
@@ -17,10 +18,12 @@ import sys
 from pathlib import Path
 
 from . import __version__, db
+from .anki import push as anki_push
 from .config import Config, load_config
 from .db import build as db_build
 from .db import queries
 from .pipeline import cards, rank, search, select
+from .review import server as review_server
 from .tatoeba import dumps as tatoeba_dumps
 from .tatoeba.audio import audio_url, media_filename
 
@@ -163,13 +166,24 @@ def cmd_run(args, cfg: Config) -> int:
     return 0
 
 
-def cmd_stub(args, cfg: Config) -> int:
-    print(
-        f"`{args.command}` arrives in the next pass (AnkiConnect + review web "
-        "app). This foundation pass stops at the review_queue.",
-        file=sys.stderr,
-    )
+def cmd_review(args, cfg: Config) -> int:
+    review_server.run_server(cfg, host=args.host, port=args.port)
     return 0
+
+
+def cmd_push(args, cfg: Config) -> int:
+    conn = db.connect(cfg.paths.db_path)
+    summary = anki_push.push_accepted(
+        conn, cfg, dry_run=args.dry_run, force=args.force
+    )
+    if not args.dry_run:
+        conn.commit()
+    conn.close()
+    print(
+        f"\nDone — pushed: {summary.pushed}, skipped: {summary.skipped}, "
+        f"errors: {len(summary.errors)}"
+    )
+    return 1 if summary.errors else 0
 
 
 # --- parser ----------------------------------------------------------------
@@ -201,9 +215,19 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_run.set_defaults(func=cmd_run)
 
-    for name in ("review", "push"):
-        p = sub.add_parser(name, help=f"{name} (next pass)")
-        p.set_defaults(func=cmd_stub)
+    p_review = sub.add_parser("review", help="Launch the local review web app (D2 gate)")
+    p_review.add_argument("--host", default="127.0.0.1", help="Bind host")
+    p_review.add_argument("--port", type=int, default=8000, help="Bind port")
+    p_review.set_defaults(func=cmd_review)
+
+    p_push = sub.add_parser("push", help="Push accepted review_queue rows into Anki")
+    p_push.add_argument(
+        "--dry-run", action="store_true", help="Print payloads; don't touch Anki"
+    )
+    p_push.add_argument(
+        "--force", action="store_true", help="Allow duplicates (override canAddNotes)"
+    )
+    p_push.set_defaults(func=cmd_push)
 
     return parser
 
