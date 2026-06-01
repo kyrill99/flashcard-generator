@@ -164,3 +164,39 @@ def test_push_dry_run_writes_nothing(corpus, monkeypatch, tmp_path):
     assert summary.pushed == 1
     assert client.calls == []  # never touched Anki
     assert queries.get_row(corpus, rid)["status"] == "accepted"
+
+
+def test_push_explicit_rowids_skip_non_accepted(corpus, monkeypatch, tmp_path):
+    """Explicit row_ids still honour the D2 gate: a pending row isn't pushed (M2)."""
+    rid = queries.enqueue(
+        corpus, word="comer", status="pending", chosen_sentence_id=1,
+        candidates=_CANDS, fields=_FIELDS, audio_filename="tatoeba_spa_1.mp3", flag="",
+    )
+    corpus.commit()
+    _patch_audio(monkeypatch, tmp_path)
+    client = FakeAnki()
+
+    summary = push_accepted(
+        corpus, load_config(), row_ids=[rid], dry_run=False, force=False,
+        client=client, log=lambda *_: None,
+    )
+
+    assert summary.pushed == 0
+    assert client.notes == []
+    assert queries.get_row(corpus, rid)["status"] == "pending"  # untouched
+
+
+def test_push_handles_empty_canaddnotes(corpus, monkeypatch, tmp_path):
+    """An empty canAddNotes verdict is skipped, not an IndexError crash (L1)."""
+    _enqueue_accepted(corpus)
+    _patch_audio(monkeypatch, tmp_path)
+    client = FakeAnki(can_add=())  # AnkiConnect returned no verdicts
+
+    summary = push_accepted(
+        corpus, load_config(), dry_run=False, force=False,
+        client=client, log=lambda *_: None,
+    )
+
+    assert summary.pushed == 0 and summary.skipped == 1
+    assert not summary.errors  # nothing escaped the per-row guard
+    assert client.notes == []

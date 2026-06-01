@@ -51,7 +51,17 @@ def push_accepted(
     if row_ids is None:
         rows = queries.list_queue(conn, status="accepted")
     else:
-        rows = [r for rid in row_ids if (r := queries.get_row(conn, rid))]
+        # Explicit ids still honour the D2 gate: only `accepted` rows push
+        # (unless forced), so a stray id can't re-push a deleted/pushed row or
+        # slip an unreviewed `pending` one past review.
+        rows = []
+        for rid in row_ids:
+            r = queries.get_row(conn, rid)
+            if r is None:
+                continue
+            if not force and r.get("status") != "accepted":
+                continue
+            rows.append(r)
 
     summary = PushSummary()
     if not rows:
@@ -90,10 +100,16 @@ def push_accepted(
 
         try:
             # Dedupe on Word (D12) before doing any work.
-            if not force and not client.can_add_notes([note])[0]:
-                summary.skipped += 1
-                log(f"skipped (already in deck): {word}")
-                continue
+            if not force:
+                can_add = client.can_add_notes([note])
+                if not can_add:  # empty/short result — don't IndexError the batch
+                    summary.skipped += 1
+                    log(f"skipped (canAddNotes returned no result): {word}")
+                    continue
+                if not can_add[0]:
+                    summary.skipped += 1
+                    log(f"skipped (already in deck): {word}")
+                    continue
 
             # Store the native-speaker mp3 first so the [sound:…] tag resolves.
             sid = row.get("chosen_sentence_id")
