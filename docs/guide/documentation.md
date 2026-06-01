@@ -1,7 +1,9 @@
 # Documentation — implemented features
 
-Reference for everything built in the foundation pass. For what is **not** yet
-built, see [../status/implementation-status.md](../status/implementation-status.md).
+Reference for everything built through the **corpus→Anki pass** (build steps
+1–6): the full `run → review → push` loop. For what is **not** yet built (the
+LLM/TTS fallback and the v1.1 vision stub), see
+[../status/implementation-status.md](../status/implementation-status.md).
 Decision tags (D1–D13) refer to
 [../specs/implementation_plan_v1.md](../specs/implementation_plan_v1.md).
 
@@ -20,7 +22,9 @@ word
          └─ rank (shorter/simpler first, native-audio boost)           [D13]
              └─ select #1 (or mark needs_fallback)                     [D4 seam]
                  └─ build card fields (incl. SentenceBlanked)          [D3]
-                     └─ enqueue to review_queue                        [D11]
+                     └─ enqueue to review_queue (pending)              [D11]
+                         └─ REVIEW gate: hear/swap/edit/accept         [D2]
+                             └─ push to Anki (media + 2 cards)         [D10/D12]
 ```
 
 All per-word work is local SQL — the Tatoeba API is never touched at runtime
@@ -34,7 +38,7 @@ All per-word work is local SQL — the Tatoeba API is never touched at runtime
 flashcard-generator/
 ├── pyproject.toml            # uv project + console script `anki-builder`
 ├── config.example.toml       # copy to config.toml to override defaults
-├── .env.example              # OPENAI_API_KEY (used in a later pass)
+├── .env.example              # OPENAI_API_KEY (used in the LLM/TTS pass, step 7)
 ├── README.md
 ├── docs/                     # this documentation set
 ├── data/                     # gitignored: dumps/, tatoeba.db, media/
@@ -54,9 +58,16 @@ flashcard-generator/
 │   │   └── cards.py          # D3 field construction + SentenceBlanked
 │   ├── tatoeba/
 │   │   ├── dumps.py          # fetch-dumps downloader
-│   │   └── audio.py          # audio URL + media filename helpers
-│   └── cli.py                # fetch-dumps, build-db, run, review/push (stub)
-└── tests/                    # fixture-DB unit tests (no network)
+│   │   └── audio.py          # audio URL/filename helpers + download_audio cache
+│   ├── anki/
+│   │   ├── connect.py        # AnkiClient (invoke v6, deck/model, media, notes)
+│   │   ├── model.py          # D3 note type: 7 fields, 2 templates, CSS
+│   │   └── push.py           # push_accepted (shared by CLI + review app)
+│   ├── review/
+│   │   ├── server.py         # FastAPI review app (D2 gate)
+│   │   └── static/index.html # single-page review UI
+│   └── cli.py                # fetch-dumps, build-db, run, review, push
+└── tests/                    # fixture-DB unit tests (Anki/audio mocked, no network)
 ```
 
 ---
@@ -84,8 +95,19 @@ summary line. `--dry-run` prints without writing; `--force` mines even if the
 word is already queued (the dedup gate, D12). A word with no usable Tatoeba
 candidate prints `needs_fallback (deferred)` and is enqueued with that status.
 
-### `anki-builder review` / `anki-builder push`
-Stubs — they print a notice. Implemented in the next pass.
+### `anki-builder review [--host HOST] [--port PORT]`
+Launches the FastAPI review web app (default `http://127.0.0.1:8000`) — the
+mandatory human gate (D2). Lists `pending` rows; per card you can hear the native
+audio, swap among ranked candidate sentences, edit fields, then **Accept**
+(→ `accepted`) or **Delete** (→ soft-deleted). You can also push directly from
+the UI. See §12.
+
+### `anki-builder push [--dry-run] [--force]`
+Pushes every `accepted` row into Anki via AnkiConnect (Anki must be running with
+the add-on `2055492159`). Per row: download+cache the mp3 → `storeMediaFile` →
+`canAddNotes` dedup on `Word` (prints `skipped (already in deck)`, D12) →
+`addNote` → mark `pushed`. `--dry-run` prints payloads and touches nothing;
+`--force` allows duplicates (`allowDuplicate`). See §11.
 
 ---
 
@@ -99,7 +121,8 @@ Stubs — they print a notice. Implemented in the next pass.
   against the config file's directory.
 - **`[ranking]`** (D13) — `length_weight`, `word_count_weight`,
   `native_audio_boost`, `ideal_min_words`, `ideal_max_words`, `candidates_kept`.
-- **`[anki]`**, **`[llm]`**, **`[tts]`** — parsed now, consumed in later passes.
+- **`[anki]`** — `deck`, `note_type`, `connect_url`; consumed by `push` (D10/D12).
+- **`[llm]`**, **`[tts]`** — parsed now, consumed in the LLM/TTS pass (step 7).
 
 Secrets (`OPENAI_API_KEY`) come from the environment / `.env`, never the TOML.
 Missing file or keys fall back to dataclass defaults, so the tool runs
@@ -179,7 +202,7 @@ as D13 intends.
 
 ## 9. Card fields (D3)
 
-`build_card_fields()` produces the 7 fields of the (future) custom note type:
+`build_card_fields()` produces the 7 fields of the custom note type (§12):
 
 | Field | Value |
 | --- | --- |
@@ -211,14 +234,69 @@ sentence id we always have:
   `storeMediaFile` dedupe, D10)
 - `sound_tag(id)` → the `[sound:…]` field value
 
-The actual mp3 download/cache and the Anki upload are deferred.
+`download_audio(id, …, cache_dir, audio_id=…)` fetches the mp3 lazily into
+`paths.media_cache` — the CDN URL first, the `audio_id` `/audio/download/`
+endpoint on a 404 — and short-circuits on a cache hit. It is called at review
+playback (`GET /api/audio/{row}`) and at push time; never during `run`. Returns
+`None` if no source yields the file, so a row can still push as a silent card.
 
 ---
 
 ## 11. The review queue (D11)
 
-`run` writes one `review_queue` row per word. `status` is `pending` (a usable
-Tatoeba card) or `needs_fallback`. `candidates_json` holds the top-N ranked
-candidates (each with its translation alternates and audio URL) for the future
-review UI's swap-to-next-candidate action. Nothing is ever pushed to a deck
-without passing this gate — "never let a card into the deck unreviewed."
+`run` writes one `review_queue` row per word. The `status` lifecycle is
+`pending → accepted → pushed`, plus `deleted` (soft — re-mineable) and the
+marked-only `needs_fallback`. `candidates_json` holds the top-N ranked candidates
+(each with its translation alternates and audio URL) for the review UI's
+swap-to-next-candidate action. Nothing is ever pushed to a deck without passing
+the review gate — "never let a card into the deck unreviewed." Each stage is a
+separate, resumable invocation; the queue is the persisted hand-off.
+
+Queue helpers live in [queries.py](../../src/anki_builder/db/queries.py):
+`enqueue`, `word_in_queue` (dedup, ignores `deleted`), `list_queue`, `get_row`
+(both decode the JSON columns), `update_row`, `set_status`, `mark_pushed`.
+
+---
+
+## 12. Anki integration (D3/D10/D12)
+
+[anki/connect.py](../../src/anki_builder/anki/connect.py) — `AnkiClient` speaks
+the AnkiConnect JSON-RPC ("version 6"). `invoke(action, **params)` is the **only**
+method that touches the wire (tests monkeypatch it), with helpers on top:
+`ensure_deck`/`ensure_model` (create-if-absent; `ensure_model` does **not** update
+an existing model), `store_media_file`/`store_media_path`, `can_add_notes`,
+`add_note`.
+
+[anki/model.py](../../src/anki_builder/anki/model.py) — the D3 note type
+(`isCloze:false`), 7 fields in the order of `CardFields.as_dict()`, and two card
+templates:
+- **Recognition** — Front `{{Word}}`; Back `{{Translation}}` + `{{Sentence}}` +
+  `{{Audio}}`.
+- **Production** — Front `{{SentenceBlanked}}` + `{{type:Word}}` (true type-in);
+  Back `{{Sentence}}` + `{{Translation}}` + `{{Audio}}`.
+- Both show a fallback badge via `{{#Flag}}…{{/Flag}}`.
+
+[anki/push.py](../../src/anki_builder/anki/push.py) — `push_accepted()` is the
+single push path used by both the CLI and the web app. For each `accepted` row it
+downloads+stores the mp3 (deterministic filename = idempotent media, D10), dedups
+on `Word` via `canAddNotes` (D12; `--force` sets `allowDuplicate`), `addNote`s,
+and marks `pushed`. Errors are caught per row so one bad card never aborts the
+batch; `--dry-run` prints payloads and writes nothing.
+
+---
+
+## 13. Review web app (D2)
+
+[review/server.py](../../src/anki_builder/review/server.py) — `create_app(cfg)`
+builds a FastAPI app (a factory, so tests drive it with a `TestClient` over a
+fixture DB). Endpoints are sync and each opens its own SQLite connection (WAL is
+on). Routes: `GET /` (the page), `GET /api/queue?status=`, `GET /api/audio/{id}`
+(downloads + serves the mp3), and `POST /api/queue/{id}/{swap,edit,accept,delete,
+push}` plus `POST /api/push-all`.
+
+A **swap** reconstructs a `Candidate` from the stored `candidates_json` entry and
+re-runs `cards.build_card_fields`, so Sentence/SentenceBlanked/Translation/Audio/
+Source and the audio filename all follow the new pick. An **edit** re-runs
+`blank_sentence` so the type-in `SentenceBlanked` stays consistent with an edited
+Word/Sentence. [static/index.html](../../src/anki_builder/review/static/index.html)
+is one vanilla-JS page (no build step) that drives those routes via `fetch()`.

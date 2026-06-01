@@ -23,10 +23,13 @@ Tracks what is built against the original architecture in
 [../specs/implementation_plan_v1.md](../specs/implementation_plan_v1.md)
 (decisions **D1–D13**, build steps **1–8**).
 
-This **foundation pass** delivered the testable core — build steps 1–3 plus the
-`fetch-dumps` downloader — and deliberately stops before any external service
-(Anki, OpenAI). Everything below runs with no Anki, no API key, and (after dumps
-are fetched) no network.
+The **foundation pass** delivered the testable core — build steps 1–3 plus the
+`fetch-dumps` downloader. A follow-up **corpus→Anki pass** added steps 4–6
+(AnkiConnect push, audio download/cache, and the FastAPI review gate), so the
+full `run → review → push` loop now works against a real Anki. Only the OpenAI
+LLM/TTS fallback (step 7) and the v1.1 vision stub (step 8) remain deferred. The
+`pytest` suite still runs with **no Anki, no API key, and no network** (all
+external services are mocked).
 
 ---
 
@@ -40,10 +43,10 @@ are fetched) no network.
 | Tiered search → filter → rank → select pipeline | ✅ Done |
 | Card-field construction (incl. `SentenceBlanked`) | ✅ Done |
 | `run` → enqueue to `review_queue` | ✅ Done |
-| Unit tests on a fixture DB | ✅ Done (23 passing) |
-| AnkiConnect push (`connect.py`, `model.py`) | ⛔ Deferred |
-| Audio mp3 download/cache | 🟡 Partial (URL/filename only) |
-| Review web app (FastAPI) | ⛔ Deferred |
+| Unit tests on a fixture DB | ✅ Done (41 passing) |
+| AnkiConnect push (`connect.py`, `model.py`, `push.py`) | ✅ Done |
+| Audio mp3 download/cache | ✅ Done |
+| Review web app (FastAPI) | ✅ Done |
 | LLM fallback sentence + TTS | 🟡 Seam only (marks `needs_fallback`) |
 | v1.1 vision word-extraction stub | ⛔ Deferred |
 
@@ -58,11 +61,11 @@ Legend: ✅ done · 🟡 partial/seam · ⛔ not started
 | 1 | `pyproject.toml`, config loader, `schema.sql` | ✅ | [pyproject.toml](../../pyproject.toml), [config.py](../../src/anki_builder/config.py), [db/schema.sql](../../src/anki_builder/db/schema.sql) |
 | 2 | Dump ingest + FTS (exact + stemmed) | ✅ | [db/build.py](../../src/anki_builder/db/build.py) |
 | 3 | Tiered search → collapse filter → rank → select | ✅ | [db/queries.py](../../src/anki_builder/db/queries.py), [pipeline/](../../src/anki_builder/pipeline/) |
-| 4 | `anki/connect.py` + `anki/model.py`; `--dry-run` payloads | ⛔ | — |
-| 5 | `tatoeba/audio.py` download/cache | 🟡 | [tatoeba/audio.py](../../src/anki_builder/tatoeba/audio.py) (URL/filename done; download not) |
-| 6 | Review web app wired to `review_queue` | ⛔ | — |
+| 4 | `anki/connect.py` + `anki/model.py` + `anki/push.py`; `push --dry-run` | ✅ | [anki/](../../src/anki_builder/anki/) |
+| 5 | `tatoeba/audio.py` download/cache | ✅ | [tatoeba/audio.py](../../src/anki_builder/tatoeba/audio.py) (`download_audio` + CDN→audio_id fallback + cache) |
+| 6 | Review web app wired to `review_queue` | ✅ | [review/](../../src/anki_builder/review/) (FastAPI + single-page UI) |
 | 7 | `llm/client.py` + `llm/tts.py` + `fallback.py` | ⛔ | — |
-| 8 | `cli.py` entry points; `llm/vision.py` stub | 🟡 | [cli.py](../../src/anki_builder/cli.py) (`fetch-dumps`/`build-db`/`run` done; `review`/`push` stubbed; no `vision.py`) |
+| 8 | `cli.py` entry points; `llm/vision.py` stub | 🟡 | [cli.py](../../src/anki_builder/cli.py) (`review`/`push` now live; no `vision.py`) |
 
 ---
 
@@ -71,8 +74,8 @@ Legend: ✅ done · 🟡 partial/seam · ⛔ not started
 | ID | Decision | Status & notes |
 | --- | --- | --- |
 | D1 | Python 3.11+ | ✅ Built on 3.11+; env runs on 3.13 via uv |
-| D2 | Minimal local web review app | ⛔ Deferred to step 6 |
-| D3 | One note type → 2 card templates; `SentenceBlanked` field | 🟡 Fields built ([cards.py](../../src/anki_builder/pipeline/cards.py)); the Anki model/templates land with step 4 |
+| D2 | Minimal local web review app | ✅ FastAPI app ([review/](../../src/anki_builder/review/)): play audio, swap candidate, edit, accept, delete, push |
+| D3 | One note type → 2 card templates; `SentenceBlanked` field | ✅ Fields ([cards.py](../../src/anki_builder/pipeline/cards.py)) + Anki model/templates ([anki/model.py](../../src/anki_builder/anki/model.py): 7 fields, Recognition + `{{type:Word}}` Production, fallback badge) |
 | D4 | OpenAI-SDK LLM + TTS, configurable model/base_url | 🟡 Config present ([config.py](../../src/anki_builder/config.py)); client not built (step 7) |
 | D5 | SQLite, queried locally; never hit the API per word | ✅ All per-word work is local SQL |
 | D6 | Base/translation language a parameter (default `eng`) | ✅ `[languages]` config |
@@ -80,9 +83,9 @@ Legend: ✅ done · 🟡 partial/seam · ⛔ not started
 | D7a | Collapse translation fan-out (one candidate per spa id) | ✅ Scalar-subquery collapse in `filtered_candidates` |
 | D8 | Audio URL keyed by sentence_id; audio dump as the filter | ✅ [tatoeba/audio.py](../../src/anki_builder/tatoeba/audio.py); audio table is the filter |
 | D9 | Tiered local search FTS → LIKE → stem | ✅ [queries.py](../../src/anki_builder/db/queries.py) `search()` |
-| D10 | Deterministic media filename `tatoeba_spa_<id>.mp3` | ✅ `media_filename()` (storeMediaFile call deferred) |
-| D11 | Resumable stages + persisted `review_queue` | ✅ Table + enqueue; review/push stages deferred |
-| D12 | Dedup + explicit skip + `--force` | 🟡 `run` dedups against the queue with `--force`; `canAddNotes` dedup is part of step 4 |
+| D10 | Deterministic media filename `tatoeba_spa_<id>.mp3` | ✅ `media_filename()` + `download_audio` + `storeMediaFile` at push ([anki/push.py](../../src/anki_builder/anki/push.py)) |
+| D11 | Resumable stages + persisted `review_queue` | ✅ Full lifecycle: enqueue → review (accept/delete) → push, each a separate resumable invocation |
+| D12 | Dedup + explicit skip + `--force` | ✅ `run` dedups against the queue; `push` dedups against the deck via `canAddNotes` (prints `skipped (already in deck)`), `--force` sets `allowDuplicate` |
 | D13 | Native-speaker ranking signal, optional | ✅ [rank.py](../../src/anki_builder/pipeline/rank.py); degrades gracefully if `user_languages` absent |
 
 ---
@@ -112,16 +115,30 @@ Legend: ✅ done · 🟡 partial/seam · ⛔ not started
 
 ---
 
-## What's next (suggested order for the next pass)
+## Corpus→Anki pass ✅ (2026-06-01) — steps 4, 5, 6
 
-1. **Step 4 — Anki:** `anki/connect.py` (`invoke` v6, ensure deck/model,
-   `storeMediaFile`, `canAddNotes`, `addNote`) + `anki/model.py` (D3 note type:
-   7 fields, Recognition + Production templates, CSS). Add `push --dry-run`.
-2. **Step 5 — Audio download:** finish `tatoeba/audio.py` (download + cache mp3,
-   CDN URL with the `audio_id` fallback endpoint).
-3. **Step 6 — Review web app:** FastAPI server + single-page UI over
-   `review_queue` (play audio, swap candidate, edit, accept, delete, push).
-4. **Step 7 — Fallback:** `llm/client.py` + `llm/tts.py` + `fallback.py`, wired
-   into `select`'s `needs_fallback` seam; flag the card in review.
-5. **Step 8 — v1.1 seam:** `llm/vision.py::extract_words(image)` stub feeding the
+The end-to-end personal loop now closes: `run` → **review (the D2 gate)** →
+**push real cards into Anki**.
+
+- **Step 4 — Anki:** [anki/connect.py](../../src/anki_builder/anki/connect.py)
+  (`AnkiClient.invoke` v6, `ensure_deck`/`ensure_model`, `storeMediaFile`,
+  `canAddNotes`, `addNote`), [anki/model.py](../../src/anki_builder/anki/model.py)
+  (the D3 note type), and [anki/push.py](../../src/anki_builder/anki/push.py)
+  (`push_accepted`, shared by the CLI and the review app). `push --dry-run`
+  prints payloads without touching Anki.
+- **Step 5 — Audio:** [tatoeba/audio.py](../../src/anki_builder/tatoeba/audio.py)
+  `download_audio` caches the mp3 (CDN primary, `audio_id` endpoint on 404).
+- **Step 6 — Review app:** [review/server.py](../../src/anki_builder/review/server.py)
+  + [static/index.html](../../src/anki_builder/review/static/index.html) — list,
+  hear audio, swap candidate, edit (re-blanks), accept, delete, push.
+- New deps (core): `fastapi`, `uvicorn`. Tests: `test_anki.py`, `test_audio.py`,
+  `test_review.py` (all mocked — no live Anki/network). **41 tests pass.**
+
+## What's next (still deferred)
+
+1. **Step 7 — Fallback:** `llm/client.py` + `llm/tts.py` + `fallback.py`, wired
+   into `select`'s `needs_fallback` seam; flag the card in review. Adds the
+   `openai` dep and `.env`/`OPENAI_API_KEY` loading. `needs_fallback` rows are
+   marked-only until then.
+2. **Step 8 — v1.1 seam:** `llm/vision.py::extract_words(image)` stub feeding the
    same pipeline.

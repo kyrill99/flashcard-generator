@@ -1,11 +1,12 @@
 # Testing Plan — current state
 
-Covers testing up to the **foundation pass**. The suite runs with **no network,
-no Anki, and no API key** — a fixture SQLite corpus stands in for the real
-dumps. This is the primary gate before wiring up external services.
+Covers testing through the **corpus→Anki pass** (build steps 1–6). The suite
+runs with **no network, no Anki, and no API key** — a fixture SQLite corpus
+stands in for the real dumps, and AnkiConnect/audio HTTP are mocked. This is the
+primary gate before any live run.
 
 ```bash
-uv run pytest            # 23 tests, ~0.5s
+uv run pytest            # 41 tests, ~1s
 uv run pytest -v         # per-test names
 uv run pytest tests/test_search.py::test_like_catches_enclitic   # one case
 ```
@@ -54,9 +55,14 @@ Maps directly to the plan's **Verification → Unit** checklist
 | Ingest → search → filter | `test_build.py::test_build_db_then_search_and_filter` | full path on a real ingest |
 | Ingest idempotency | `test_build.py::test_build_db_is_idempotent` | rerun → no doubled rows |
 | Review queue + dedup (D11/D12) | `test_queue.py` (2 cases) | enqueue, `word_in_queue`, deleted ≠ blocked |
+| Audio download/cache (D8, step 5) | `test_audio.py` (5 cases) | CDN 200 caches; 404→`audio_id` fallback; 404+no id→None; cache hit = no request; `force` re-downloads |
+| Note type (D3, step 4) | `test_anki.py::test_model_definition_shape` · `test_note_payload_*` | 7 fields, 2 templates, `isCloze=False`, `{{type:Word}}` Production; payload shape + `allowDuplicate` |
+| AnkiConnect client (step 4) | `test_anki.py::test_ensure_model_is_idempotent` | `createModel` only when absent |
+| Push + dedup (D10/D12, step 4) | `test_anki.py::test_push_*` (4 cases) | adds note + stores media + marks `pushed`; `canAddNotes` False skips; `--force` overrides; `--dry-run` writes nothing |
+| Review app (D2, step 6) | `test_review.py` (6 cases) | queue list; swap rebuilds fields/audio; edit re-blanks; accept/delete flip status; push via mocked invoke; index served |
 
-**23 tests, all passing.** Every "Unit (fixture SQLite, no network)" item from
-the plan is covered.
+**41 tests, all passing.** Every "Unit (fixture SQLite, no network)" item from
+the plan is covered, plus mocked coverage of Anki/audio/review.
 
 ---
 
@@ -88,6 +94,20 @@ part of `pytest`.
    infinitive is rare in the corpus but whose conjugations are common, and
    confirm it still returns sentences (stem tier) rather than `needs_fallback`.
 
+4. **Review → push happy path** (needs Anki + the AnkiConnect add-on
+   `2055492159` running):
+   ```bash
+   uv run anki-builder run --word comer
+   uv run anki-builder review            # open http://127.0.0.1:8000
+   #   → hear the native clip, swap once, edit a field, Accept
+   uv run anki-builder push              # or the UI's Push button
+   uv run anki-builder push --dry-run    # prints payloads, touches nothing
+   ```
+   Confirm in Anki: the `AnkiBuilder Spanish` note type + `Spanish::Mining` deck
+   exist, **2 cards** (Recognition + Production), audio plays, the type-in works
+   on Production, no fallback badge. Re-push → `skipped (already in deck)`;
+   `--force` overrides.
+
 ---
 
 ## 4. Not yet covered (out of scope for this pass)
@@ -96,12 +116,10 @@ These belong to later passes and have **no** tests yet:
 
 - `fetch-dumps` network/decompression path (downloader is exercised only by a
   manual run; consider a mocked-`httpx` test next pass).
-- mp3 download/cache (`tatoeba/audio.py` only has pure URL/filename helpers,
-  which are covered indirectly via `test_build_card_fields`).
-- AnkiConnect (`createDeck`/`createModel`/`canAddNotes`/`storeMediaFile`/
-  `addNote`) — needs a mockable `invoke` layer + `--dry-run` payload tests.
-- LLM fallback sentence + TTS generation, and the `fallback` flag end-to-end.
-- The review web app.
+- A **live** AnkiConnect round-trip (the unit tests mock `invoke`; the real
+  `createModel`/`addNote` path is exercised only by the manual happy path below).
+- LLM fallback sentence + TTS generation, and the `fallback` flag end-to-end
+  (step 7, deferred).
 
 ---
 

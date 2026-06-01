@@ -38,6 +38,7 @@ class IngestCounts:
     links: int = 0
     audio: int = 0
     user_languages: int = 0
+    malformed: int = 0  # rows skipped for a non-integer id (corrupt dump line)
 
     def as_dict(self) -> dict[str, int]:
         return {
@@ -46,6 +47,7 @@ class IngestCounts:
             "links": self.links,
             "audio": self.audio,
             "user_languages": self.user_languages,
+            "malformed": self.malformed,
         }
 
 
@@ -75,6 +77,19 @@ def _clean(value: str | None) -> str | None:
     return value
 
 
+def _to_int(value: str | None) -> int | None:
+    """Parse an id column; return None for a missing/non-integer value.
+
+    Lets a single corrupt dump line be skipped+counted instead of aborting the
+    whole multi-million-row ingest (the source is usually clean, but one bad
+    line shouldn't cost the entire build).
+    """
+    try:
+        return int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+
+
 def _batched(it: Iterable, n: int) -> Iterator[list]:
     batch: list = []
     for item in it:
@@ -92,7 +107,9 @@ def _reset_corpus(conn: sqlite3.Connection) -> None:
     conn.execute("DELETE FROM sentences_fts")
 
 
-def _load_target_sentences(conn: sqlite3.Connection, path: Path, lang: str) -> set[int]:
+def _load_target_sentences(
+    conn: sqlite3.Connection, path: Path, lang: str, counts: IngestCounts
+) -> set[int]:
     """Insert target sentences + FTS rows; return the set of target ids."""
     ids: set[int] = set()
 
@@ -100,7 +117,10 @@ def _load_target_sentences(conn: sqlite3.Connection, path: Path, lang: str) -> s
         for row in _rows(path):
             if len(row) < 3:
                 continue
-            sid = int(row[0])
+            sid = _to_int(row[0])
+            if sid is None:
+                counts.malformed += 1
+                continue
             text = row[2]
             ids.add(sid)
             yield (sid, lang, text, fold_accents(text), stems_blob(text))
@@ -119,7 +139,7 @@ def _load_target_sentences(conn: sqlite3.Connection, path: Path, lang: str) -> s
 
 
 def _load_links(
-    conn: sqlite3.Connection, path: Path, target_ids: set[int]
+    conn: sqlite3.Connection, path: Path, target_ids: set[int], counts: IngestCounts
 ) -> set[int]:
     """Insert canonical (target_id -> other_id) links; return referenced others.
 
@@ -133,7 +153,10 @@ def _load_links(
         for row in _rows(path):
             if len(row) < 2:
                 continue
-            a, b = int(row[0]), int(row[1])
+            a, b = _to_int(row[0]), _to_int(row[1])
+            if a is None or b is None:
+                counts.malformed += 1
+                continue
             if a in target_ids:
                 src, dst = a, b
             elif b in target_ids:
@@ -151,7 +174,11 @@ def _load_links(
 
 
 def _load_base_sentences(
-    conn: sqlite3.Connection, path: Path, lang: str, keep_ids: set[int]
+    conn: sqlite3.Connection,
+    path: Path,
+    lang: str,
+    keep_ids: set[int],
+    counts: IngestCounts,
 ) -> int:
     """Insert only base sentences referenced by links (keeps the table small)."""
     count = 0
@@ -161,7 +188,10 @@ def _load_base_sentences(
         for row in _rows(path):
             if len(row) < 3:
                 continue
-            sid = int(row[0])
+            sid = _to_int(row[0])
+            if sid is None:
+                counts.malformed += 1
+                continue
             if sid not in keep_ids:
                 continue
             count += 1
@@ -176,14 +206,19 @@ def _load_base_sentences(
     return count
 
 
-def _load_audio(conn: sqlite3.Connection, path: Path, target_ids: set[int]) -> int:
+def _load_audio(
+    conn: sqlite3.Connection, path: Path, target_ids: set[int], counts: IngestCounts
+) -> int:
     """Insert audio rows for target sentences. Tolerates 4- or 5-column dumps."""
     count = 0
 
     def parse(row: list[str]) -> tuple | None:
         if len(row) < 2:
             return None
-        sid = int(row[0])
+        sid = _to_int(row[0])
+        if sid is None:
+            counts.malformed += 1
+            return None
         if sid not in target_ids:
             return None
         # 5-col: sid, audio_id, username, license, attribution_url
@@ -277,20 +312,22 @@ def build_db(
         _reset_corpus(conn)
 
         log(f"Loading {target_lang} sentences ...")
-        target_ids = _load_target_sentences(conn, paths["target_sentences"], target_lang)
+        target_ids = _load_target_sentences(
+            conn, paths["target_sentences"], target_lang, counts
+        )
         counts.target_sentences = len(target_ids)
 
         log(f"Loading {target_lang}-{base_lang} links ...")
-        needed_base = _load_links(conn, paths["links"], target_ids)
+        needed_base = _load_links(conn, paths["links"], target_ids, counts)
         counts.links = conn.execute("SELECT COUNT(*) FROM links").fetchone()[0]
 
         log(f"Loading {base_lang} sentences (referenced only) ...")
         counts.base_sentences = _load_base_sentences(
-            conn, paths["base_sentences"], base_lang, needed_base
+            conn, paths["base_sentences"], base_lang, needed_base, counts
         )
 
         log("Loading audio index ...")
-        counts.audio = _load_audio(conn, paths["audio"], target_ids)
+        counts.audio = _load_audio(conn, paths["audio"], target_ids, counts)
 
         if paths["user_languages"].exists():
             log("Loading user_languages (native signal) ...")
@@ -299,6 +336,9 @@ def build_db(
             )
         else:
             log("user_languages dump absent — native-audio boost disabled.")
+
+        if counts.malformed:
+            log(f"Skipped {counts.malformed:,} malformed row(s) (non-integer id).")
 
         for key, value in counts.as_dict().items():
             conn.execute(
