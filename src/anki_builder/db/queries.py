@@ -210,3 +210,86 @@ def word_in_queue(conn: sqlite3.Connection, word: str) -> bool:
         (word,),
     ).fetchone()
     return row is not None
+
+
+def _row_to_dict(row: sqlite3.Row) -> dict:
+    """Decode a review_queue row, parsing the JSON columns to objects."""
+    d = dict(row)
+    d["candidates"] = json.loads(d["candidates_json"]) if d["candidates_json"] else []
+    d["fields"] = json.loads(d["fields_json"]) if d["fields_json"] else {}
+    d.pop("candidates_json", None)
+    d.pop("fields_json", None)
+    return d
+
+
+def list_queue(conn: sqlite3.Connection, status: str | None = None) -> list[dict]:
+    """Return review_queue rows (JSON columns decoded), newest first.
+
+    `status=None` returns everything except soft-deleted rows; pass an explicit
+    status (e.g. ``"pending"``, ``"accepted"``) to filter.
+    """
+    if status is None:
+        cur = conn.execute(
+            "SELECT * FROM review_queue WHERE status != 'deleted' ORDER BY id DESC"
+        )
+    else:
+        cur = conn.execute(
+            "SELECT * FROM review_queue WHERE status = ? ORDER BY id DESC", (status,)
+        )
+    return [_row_to_dict(r) for r in cur]
+
+
+def get_row(conn: sqlite3.Connection, row_id: int) -> dict | None:
+    """Fetch a single review_queue row by id (JSON columns decoded)."""
+    row = conn.execute(
+        "SELECT * FROM review_queue WHERE id = ?", (row_id,)
+    ).fetchone()
+    return _row_to_dict(row) if row is not None else None
+
+
+def update_row(
+    conn: sqlite3.Connection,
+    row_id: int,
+    *,
+    fields: dict | None = None,
+    chosen_sentence_id: int | None = None,
+    audio_filename: str | None = None,
+    flag: str | None = None,
+) -> None:
+    """Patch the mutable columns of a review_queue row (review edits/swap).
+
+    Only the keyword arguments that are not ``None`` are written, so a caller can
+    update just the fields, just the chosen sentence, etc. Caller commits.
+    """
+    sets: list[str] = []
+    params: list[object] = []
+    if fields is not None:
+        sets.append("fields_json = ?")
+        params.append(json.dumps(fields, ensure_ascii=False))
+    if chosen_sentence_id is not None:
+        sets.append("chosen_sentence_id = ?")
+        params.append(chosen_sentence_id)
+    if audio_filename is not None:
+        sets.append("audio_filename = ?")
+        params.append(audio_filename)
+    if flag is not None:
+        sets.append("flag = ?")
+        params.append(flag)
+    if not sets:
+        return
+    params.append(row_id)
+    conn.execute(
+        f"UPDATE review_queue SET {', '.join(sets)} WHERE id = ?", params
+    )
+
+
+def set_status(conn: sqlite3.Connection, row_id: int, status: str) -> None:
+    """Set a review_queue row's status (e.g. accepted/deleted/pushed). Caller commits."""
+    conn.execute(
+        "UPDATE review_queue SET status = ? WHERE id = ?", (status, row_id)
+    )
+
+
+def mark_pushed(conn: sqlite3.Connection, row_id: int) -> None:
+    """Mark a row as pushed to Anki (terminal state). Caller commits."""
+    set_status(conn, row_id, "pushed")
