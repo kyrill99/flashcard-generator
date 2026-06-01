@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>anki-builder · review</title>
+<style>
+  :root { --bg:#f5f5f7; --card:#fff; --line:#e3e3e8; --accent:#0a84ff; --danger:#d23; }
+  * { box-sizing: border-box; }
+  body { margin:0; font:16px/1.45 -apple-system,Segoe UI,Roboto,sans-serif;
+         background:var(--bg); color:#1d1d1f; }
+  header { position:sticky; top:0; background:rgba(245,245,247,.92);
+           backdrop-filter:blur(8px); border-bottom:1px solid var(--line);
+           padding:14px 20px; display:flex; align-items:center; gap:14px; z-index:5; }
+  header h1 { font-size:18px; margin:0; flex:1; }
+  select, button { font:inherit; }
+  button { border:1px solid var(--line); background:#fff; border-radius:8px;
+           padding:6px 12px; cursor:pointer; }
+  button:hover { border-color:#bbb; }
+  button.primary { background:var(--accent); color:#fff; border-color:var(--accent); }
+  button.danger { color:var(--danger); }
+  #list { max-width:760px; margin:20px auto; padding:0 16px; display:grid; gap:16px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:14px;
+          padding:16px 18px; box-shadow:0 1px 3px rgba(0,0,0,.04); }
+  .card .word { font-size:22px; font-weight:600; }
+  .row { display:flex; gap:8px; align-items:center; margin:6px 0; }
+  .row label { width:96px; color:#666; font-size:13px; flex:none; }
+  .row input { flex:1; padding:6px 8px; border:1px solid var(--line); border-radius:7px; font:inherit; }
+  .blank { color:#444; font-style:italic; }
+  .flag { display:inline-block; padding:1px 9px; border-radius:9px; background:#ffefc2;
+          color:#7a5b00; font-size:12px; text-transform:uppercase; margin-left:8px; }
+  audio { width:100%; margin:8px 0; }
+  .actions { display:flex; gap:8px; margin-top:12px; flex-wrap:wrap; }
+  .src { color:#999; font-size:12px; margin-top:8px; }
+  .empty { text-align:center; color:#888; margin-top:60px; }
+  .toast { position:fixed; bottom:20px; left:50%; transform:translateX(-50%);
+           background:#1d1d1f; color:#fff; padding:10px 16px; border-radius:10px;
+           opacity:0; transition:opacity .2s; pointer-events:none; }
+  .toast.show { opacity:.95; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Review queue</h1>
+  <select id="filter">
+    <option value="pending">pending</option>
+    <option value="accepted">accepted</option>
+    <option value="needs_fallback">needs_fallback</option>
+    <option value="">all</option>
+  </select>
+  <button id="pushAll" class="primary">Push all accepted</button>
+</header>
+<div id="list"></div>
+<div id="toast" class="toast"></div>
+
+<script>
+const $ = (s, el=document) => el.querySelector(s);
+const api = (url, opts) => fetch(url, opts).then(async r => {
+  const body = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(body.detail || body.errors?.join("; ") || r.statusText);
+  return body;
+});
+function toast(msg) {
+  const t = $("#toast"); t.textContent = msg; t.classList.add("show");
+  clearTimeout(t._h); t._h = setTimeout(() => t.classList.remove("show"), 2200);
+}
+const esc = s => (s ?? "").replace(/[&<>"]/g, c =>
+  ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;" }[c]));
+
+function cardHTML(row) {
+  const f = row.fields || {};
+  const cands = row.candidates || [];
+  const opts = cands.map((c, i) =>
+    `<option value="${i}" ${c.sentence_id === row.chosen_sentence_id ? "selected" : ""}>`
+    + `#${c.sentence_id} · ${esc(c.spa_text).slice(0, 60)}</option>`).join("");
+  const flag = f.Flag ? `<span class="flag">${esc(f.Flag)}</span>` : "";
+  const audio = row.chosen_sentence_id
+    ? `<audio controls src="/api/audio/${row.id}?t=${Date.now()}"></audio>` : "";
+  return `<div class="card" data-id="${row.id}">
+    <div class="word">${esc(f.Word || row.word)} ${flag}</div>
+    ${audio}
+    <div class="row"><label>Sentence</label><input data-k="Sentence" value="${esc(f.Sentence)}"></div>
+    <div class="row blank"><label>Blanked</label><span class="bk">${esc(f.SentenceBlanked)}</span></div>
+    <div class="row"><label>Translation</label><input data-k="Translation" value="${esc(f.Translation)}"></div>
+    <div class="row"><label>Word</label><input data-k="Word" value="${esc(f.Word)}"></div>
+    ${cands.length > 1 ? `<div class="row"><label>Swap</label><select class="swap">${opts}</select></div>` : ""}
+    <div class="src">${esc(f.Source || "")} · status: ${esc(row.status)}</div>
+    <div class="actions">
+      <button class="save">Save edits</button>
+      <button class="accept primary">Accept</button>
+      <button class="push">Push now</button>
+      <button class="delete danger">Delete</button>
+    </div>
+  </div>`;
+}
+
+async function load() {
+  const status = $("#filter").value;
+  const { rows } = await api(`/api/queue?status=${status}`);
+  const list = $("#list");
+  list.innerHTML = rows.length
+    ? rows.map(cardHTML).join("")
+    : `<div class="empty">Nothing here. Mine words with <code>anki-builder run</code>.</div>`;
+  rows.forEach(r => list.querySelector(`.card[data-id="${r.id}"]`)._row = r);
+}
+
+function collectFields(card) {
+  const fields = {};
+  card.querySelectorAll("input[data-k]").forEach(i => fields[i.dataset.k] = i.value);
+  return fields;
+}
+
+document.addEventListener("click", async e => {
+  const card = e.target.closest(".card");
+  if (!card) return;
+  const id = card.dataset.id;
+  try {
+    if (e.target.matches(".save")) {
+      const row = await api(`/api/queue/${id}/edit`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ fields: collectFields(card) }) });
+      card._row = row; $(".bk", card).textContent = row.fields.SentenceBlanked || "";
+      toast("Saved");
+    } else if (e.target.matches(".accept")) {
+      await api(`/api/queue/${id}/accept`, { method: "POST" }); toast("Accepted"); load();
+    } else if (e.target.matches(".delete")) {
+      await api(`/api/queue/${id}/delete`, { method: "POST" }); toast("Deleted"); load();
+    } else if (e.target.matches(".push")) {
+      const s = await api(`/api/queue/${id}/push`, { method: "POST" });
+      toast(s.pushed ? "Pushed to Anki" : (s.skipped ? "Skipped (duplicate)" : "Nothing pushed"));
+      load();
+    }
+  } catch (err) { toast("Error: " + err.message); }
+});
+
+document.addEventListener("change", async e => {
+  if (!e.target.matches(".swap")) return;
+  const card = e.target.closest(".card");
+  try {
+    const row = await api(`/api/queue/${card.dataset.id}/swap`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ candidate_index: Number(e.target.value) }) });
+    card._row = row;
+    card.querySelector('input[data-k="Sentence"]').value = row.fields.Sentence || "";
+    card.querySelector('input[data-k="Translation"]').value = row.fields.Translation || "";
+    $(".bk", card).textContent = row.fields.SentenceBlanked || "";
+    const a = card.querySelector("audio"); if (a) a.src = `/api/audio/${card.dataset.id}?t=${Date.now()}`;
+    toast("Swapped");
+  } catch (err) { toast("Error: " + err.message); }
+});
+
+$("#pushAll").addEventListener("click", async () => {
+  try {
+    const s = await api("/api/push-all", { method: "POST" });
+    toast(`Pushed ${s.pushed}, skipped ${s.skipped}` + (s.errors.length ? `, ${s.errors.length} errors` : ""));
+    load();
+  } catch (err) { toast("Error: " + err.message); }
+});
+$("#filter").addEventListener("change", load);
+load();
+</script>
+</body>
+</html>
