@@ -47,7 +47,10 @@ def app_ctx(tmp_path):
     cfg = Config(paths=PathsConfig(
         db_path=db_path, dumps_dir=tmp_path / "dumps", media_cache=tmp_path / "media"
     ))
-    yield TestClient(create_app(cfg)), cfg, rid
+    # Exercise the production guard (Host allowlist + CSRF); a loopback base_url
+    # makes the test client's Host pass.
+    app = create_app(cfg, allowed_hosts={"127.0.0.1", "localhost", "::1"})
+    yield TestClient(app, base_url="http://localhost"), cfg, rid
 
 
 def test_queue_lists_pending(app_ctx):
@@ -117,3 +120,61 @@ def test_index_page_served(app_ctx):
     resp = client.get("/")
     assert resp.status_code == 200
     assert "Review queue" in resp.text
+
+
+# --- guard / status-machine hardening (M1/M2) ------------------------------
+
+
+def test_guard_rejects_unknown_host(app_ctx):
+    """Anti-DNS-rebinding: a non-loopback Host header is refused (M1)."""
+    _client, cfg, rid = app_ctx
+    app = create_app(cfg, allowed_hosts={"127.0.0.1", "localhost", "::1"})
+    bad = TestClient(app, base_url="http://evil.example")
+    assert bad.post(f"/api/queue/{rid}/accept").status_code == 400
+
+
+def test_guard_blocks_cross_site_post(app_ctx):
+    """CSRF: a cross-site state-changing request is refused; same-site is fine (M1)."""
+    client, _cfg, rid = app_ctx
+    blocked = client.post(
+        f"/api/queue/{rid}/accept", headers={"Sec-Fetch-Site": "cross-site"}
+    )
+    assert blocked.status_code == 403
+    allowed = client.post(
+        f"/api/queue/{rid}/accept", headers={"Sec-Fetch-Site": "same-origin"}
+    )
+    assert allowed.status_code == 200
+
+
+def test_safe_get_allowed_cross_site(app_ctx):
+    """The CSRF check only gates unsafe methods — GET stays usable (M1)."""
+    client, _cfg, _rid = app_ctx
+    resp = client.get("/api/queue", headers={"Sec-Fetch-Site": "cross-site"})
+    assert resp.status_code == 200
+
+
+def test_push_one_rejects_terminal_status(app_ctx):
+    """A deleted row can't be re-pushed via the per-row endpoint (M2)."""
+    client, _cfg, rid = app_ctx
+    client.post(f"/api/queue/{rid}/delete")
+    assert client.post(f"/api/queue/{rid}/push").status_code == 409
+
+
+def test_push_one_promotes_pending(app_ctx, monkeypatch, tmp_path):
+    """One-click Push on a pending row counts as the human accept, then pushes (M2)."""
+    client, _cfg, rid = app_ctx
+    mp3 = tmp_path / "clip.mp3"
+    mp3.write_bytes(b"MP3")
+    monkeypatch.setattr(
+        "anki_builder.tatoeba.audio.download_audio", lambda *a, **k: mp3
+    )
+    monkeypatch.setattr(
+        "anki_builder.anki.connect.AnkiClient.invoke",
+        lambda self, action, **p: {
+            "deckNames": [], "modelNames": [], "createDeck": 1, "createModel": {},
+            "canAddNotes": [True], "storeMediaFile": "f.mp3", "addNote": 1,
+        }[action],
+    )
+    resp = client.post(f"/api/queue/{rid}/push")
+    assert resp.status_code == 200 and resp.json()["pushed"] == 1
+    assert queries.get_row(db.connect(_cfg.paths.db_path), rid)["status"] == "pushed"

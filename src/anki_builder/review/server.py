@@ -11,13 +11,13 @@ from __future__ import annotations
 
 import sqlite3
 from pathlib import Path
+from urllib.parse import urlparse
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from pydantic import BaseModel
 
 from ..anki import push as anki_push
-from ..anki.connect import AnkiClient
 from ..config import Config
 from ..db import connect as db_connect
 from ..db import queries
@@ -26,6 +26,43 @@ from ..pipeline import cards
 from ..tatoeba import audio
 
 _STATIC = Path(__file__).parent / "static"
+
+# Loopback names the local review server trusts as its own origin/host. Used to
+# defend the unauthenticated local API against DNS-rebinding (Host allowlist)
+# and CSRF (cross-site state-changing requests).
+_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
+_SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+
+
+def _host_only(raw: str) -> str:
+    """Strip the port (and IPv6 brackets) from a Host/netloc value."""
+    raw = raw.strip()
+    if raw.startswith("["):  # IPv6 literal, e.g. [::1]:8000
+        return raw[1 : raw.index("]")] if "]" in raw else raw.strip("[]")
+    return raw.rsplit(":", 1)[0] if ":" in raw else raw
+
+
+def _resolve_allowed_hosts(host: str) -> set[str] | None:
+    """Host allowlist for the bind address; ``None`` disables the Host check.
+
+    Loopback binds get rebinding protection. A specific LAN bind keeps the check
+    but adds that address (so the operator's own requests work) and warns. A
+    ``0.0.0.0`` bind can't predict the external host, so the Host check is off
+    (CSRF/Origin protection still applies) and we warn loudly.
+    """
+    if host in _LOOPBACK_HOSTS or host == "":
+        return set(_LOOPBACK_HOSTS)
+    if host == "0.0.0.0":
+        print(
+            "WARNING: binding 0.0.0.0 exposes the review API (no authentication) "
+            "to your network — anyone who can reach this port can push/delete cards."
+        )
+        return None
+    print(
+        f"WARNING: binding non-loopback host {host!r}; the review API has no "
+        "authentication. Only do this on a trusted network."
+    )
+    return set(_LOOPBACK_HOSTS) | {host}
 
 
 class SwapBody(BaseModel):
@@ -49,10 +86,42 @@ def _candidate_from_entry(entry: dict) -> Candidate:
     )
 
 
-def create_app(cfg: Config) -> FastAPI:
-    """Build the review app bound to the corpus DB / config in `cfg`."""
+def create_app(cfg: Config, *, allowed_hosts: set[str] | None = None) -> FastAPI:
+    """Build the review app bound to the corpus DB / config in `cfg`.
+
+    The app serves an *unauthenticated* local API, so a guard middleware defends
+    it against the two ways a browser could reach it unintentionally: a Host
+    allowlist blocks DNS-rebinding, and a same-site check on state-changing
+    methods blocks CSRF. Pass ``allowed_hosts`` to enable the Host check
+    (``run_server`` does this with the loopback set); ``None`` leaves it off but
+    keeps the CSRF check. Non-browser clients (curl, the test client) send
+    neither ``Sec-Fetch-Site`` nor ``Origin`` and are allowed through.
+    """
     app = FastAPI(title="anki-builder review")
     target = cfg.languages.target_lang
+    hosts = set(_LOOPBACK_HOSTS) if allowed_hosts is None else allowed_hosts
+
+    @app.middleware("http")
+    async def _guard(request: Request, call_next):
+        # Anti-DNS-rebinding: the Host the browser used must be one we expect.
+        if allowed_hosts is not None:
+            if _host_only(request.headers.get("host", "")) not in hosts:
+                return JSONResponse({"detail": "host not allowed"}, status_code=400)
+        # CSRF: reject cross-site state-changing requests.
+        if request.method not in _SAFE_METHODS:
+            site = request.headers.get("sec-fetch-site")
+            if site is not None:
+                if site not in ("same-origin", "none"):
+                    return JSONResponse(
+                        {"detail": "cross-site request blocked"}, status_code=403
+                    )
+            else:  # older clients without Fetch Metadata: fall back to Origin.
+                origin = request.headers.get("origin")
+                if origin and _host_only(urlparse(origin).netloc) not in hosts:
+                    return JSONResponse(
+                        {"detail": "cross-origin request blocked"}, status_code=403
+                    )
+        return await call_next(request)
 
     def conn() -> sqlite3.Connection:
         return db_connect(cfg.paths.db_path)
@@ -159,13 +228,21 @@ def create_app(cfg: Config) -> FastAPI:
     def push_one(row_id: int):
         c = conn()
         try:
-            _require(c, row_id)
+            row = _require(c, row_id)
+            status = row.get("status")
+            if status in ("deleted", "pushed", "needs_fallback"):
+                raise HTTPException(status_code=409, detail=f"cannot push a {status} row")
+            if status == "pending":
+                # A one-click "Push now" is itself the human approval (D2 gate):
+                # promote to accepted so push_accepted's status filter passes.
+                queries.set_status(c, row_id, "accepted")
+                c.commit()
             summary = anki_push.push_accepted(
                 c, cfg, row_ids=[row_id], dry_run=False, force=False, log=lambda *_: None
             )
             c.commit()
-            status = 200 if not summary.errors else 502
-            return JSONResponse(summary.as_dict(), status_code=status)
+            status_code = 200 if not summary.errors else 502
+            return JSONResponse(summary.as_dict(), status_code=status_code)
         finally:
             c.close()
 
@@ -194,5 +271,11 @@ def run_server(cfg: Config, *, host: str = "127.0.0.1", port: int = 8000) -> Non
             "Corpus is empty. Run `anki-builder fetch-dumps`, `build-db`, then "
             "`run` first."
         )
+    allowed_hosts = _resolve_allowed_hosts(host)
     print(f"Review app on http://{host}:{port}  (Ctrl+C to stop)")
-    uvicorn.run(create_app(cfg), host=host, port=port, log_level="warning")
+    uvicorn.run(
+        create_app(cfg, allowed_hosts=allowed_hosts),
+        host=host,
+        port=port,
+        log_level="warning",
+    )
