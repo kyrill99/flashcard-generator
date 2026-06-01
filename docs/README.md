@@ -26,7 +26,7 @@ docs/
 
 ### Testing
 - [testing/testing-plan.md](testing/testing-plan.md) — fixtures, the coverage
-  matrix (23 tests), manual/live verification, and known gaps.
+  matrix (41 tests), manual/live verification, and known gaps.
 
 ### Specs (original inputs)
 - [specs/implementation_plan_v1.md](specs/implementation_plan_v1.md) —

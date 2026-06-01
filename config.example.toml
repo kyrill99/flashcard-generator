@@ -1,7 +1,7 @@
 # Personal Anki Card Builder — example config.
 # Copy to config.toml and edit. config.toml is gitignored.
-# In this foundation pass only [languages], [paths], and [ranking] are read;
-# [anki], [llm], and [tts] are declared now for the later integration pass.
+# [languages], [paths], [ranking], and [anki] are all read now;
+# [llm] and [tts] are declared for the later LLM/TTS fallback pass (step 7).
 
 [languages]
 # Target language to mine sentences for, and the base/translation language (D6).
@@ -26,7 +26,8 @@ ideal_max_words = 12         # sentences longer than this are penalised
 candidates_kept = 8          # how many ranked candidates to keep for review swap
 
 [anki]
-# Used in the later pass (AnkiConnect). Declared now for completeness.
+# AnkiConnect target (D10/D12). Anki must be running with the AnkiConnect add-on
+# (code 2055492159) when you `push`. The note type is created on first push.
 deck = "Spanish::Mining"
 note_type = "AnkiBuilder Spanish"
 connect_url = "http://127.0.0.1:8765"

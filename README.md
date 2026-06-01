@@ -5,9 +5,10 @@ sentences + native-speaker audio** — a recognition card and a type-in/cloze
 production card per word. The LLM is only a fallback when Tatoeba has no good
 match. Every card passes a mandatory human review before it enters a deck.
 
-> **Status:** foundation pass complete — the corpus DB, tiered search pipeline,
-> and card-field construction work end-to-end and are unit-tested. AnkiConnect
-> push, the review web app, and the live LLM/TTS fallback are not built yet.
+> **Status:** the full `run → review → push` loop works — corpus DB, tiered
+> search pipeline, card-field construction, the FastAPI review gate, and
+> AnkiConnect push, all unit-tested (Anki/audio mocked). Only the live LLM/TTS
+> fallback and the v1.1 vision stub are not built yet.
 > See [docs/status/implementation-status.md](docs/status/implementation-status.md).
 
 ## Quickstart
@@ -19,6 +20,8 @@ uv run pytest                        # run the test suite (no network/Anki neede
 uv run anki-builder fetch-dumps      # download Tatoeba dumps (network)
 uv run anki-builder build-db         # one-time ingest into SQLite
 uv run anki-builder run --word comer # mine a word -> review_queue (prints a summary)
+uv run anki-builder review           # review gate at http://127.0.0.1:8000 (hear/swap/edit/accept)
+uv run anki-builder push             # push accepted cards -> Anki (needs Anki + AnkiConnect)
 ```
 
 Copy `config.example.toml` → `config.toml` and `.env.example` → `.env` to
@@ -39,4 +42,5 @@ override defaults (deck, languages, paths, ranking weights, LLM/TTS settings).
 ## Requirements
 
 - Python ≥ 3.11, [uv](https://docs.astral.sh/uv/)
-- (Later passes) Anki desktop + the AnkiConnect add-on, an OpenAI-compatible API key
+- To `push`: Anki desktop + the AnkiConnect add-on (code `2055492159`) running
+- (Later pass — LLM/TTS fallback) an OpenAI-compatible API key
