@@ -70,6 +70,12 @@ def cmd_build_db(args, cfg: Config) -> int:
         print(f"  {key:18} {value:>10,}")
     if counts.audio == 0:
         print("\nWARNING: zero audio rows — check the audio dump.", file=sys.stderr)
+    if counts.malformed:
+        print(
+            f"NOTE: skipped {counts.malformed:,} malformed dump row(s) "
+            "(non-integer id).",
+            file=sys.stderr,
+        )
     return 0
 
 

@@ -63,6 +63,20 @@ def test_build_db_then_search_and_filter(tmp_path):
         conn.close()
 
 
+def test_build_db_skips_malformed_rows(tmp_path):
+    """One corrupt id line is skipped + counted, not fatal to the ingest (M4)."""
+    dumps = tmp_path / "dumps"
+    _write_dumps(dumps)
+    (dumps / "spa_sentences.tsv").write_text(
+        SPA_SENTENCES + "notanid\tspa\tFrase rota.\n", encoding="utf-8"
+    )
+
+    counts = db_build.build_db(tmp_path / "tatoeba.db", dumps, log=lambda *_: None)
+
+    assert counts.malformed == 1
+    assert counts.target_sentences == 2  # the two well-formed rows still loaded
+
+
 def test_build_db_is_idempotent(tmp_path):
     """Re-running build-db rebuilds the corpus without doubling rows."""
     _write_dumps(tmp_path / "dumps")
