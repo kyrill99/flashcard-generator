@@ -47,9 +47,14 @@ class Candidate:
 
 @dataclass
 class CardFields:
-    """The seven fields of the custom note type (D3)."""
+    """The eight fields of the custom note type (D3).
+
+    `word_translation` is the short L1 word gloss (e.g. *to eat*), distinct from
+    `translation` (the full sentence translation).
+    """
 
     word: str
+    word_translation: str
     sentence: str
     sentence_blanked: str
     translation: str
@@ -60,6 +65,7 @@ class CardFields:
     def as_dict(self) -> dict:
         return {
             "Word": self.word,
+            "WordTranslation": self.word_translation,
             "Sentence": self.sentence,
             "SentenceBlanked": self.sentence_blanked,
             "Translation": self.translation,
