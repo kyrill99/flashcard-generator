@@ -1,6 +1,23 @@
 # Implementation Status
 
-_Last updated: 2026-06-01_
+_Last updated: 2026-06-02_
+
+## Two-card design + inflection-proof gloss pass ✅ (2026-06-02)
+
+Switched to the refined two-card design ([docs/card_types/final-plan.md](../card_types/final-plan.md)):
+the note type now has **8 fields** (`WordTranslation` added at index 1) — Card 1 *Contextual
+Recognition* puts `{{Audio}}` on the front (autoplay) and the gloss + sentence + translation on the
+back; Card 2 *Productive Cloze* prompts with the L1 gloss before the blanked sentence + `{{type:Word}}`.
+
+The new L1 word gloss comes from an offline **FreeDict `spa-eng`** dictionary
+([dictionary/freedict.py](../../src/anki_builder/dictionary/freedict.py)), fetched by `fetch-dumps`
+and ingested into a new `glossary` table by `build-db` (optional, like `user_languages`). The lookup
+[`queries.gloss_for`](../../src/anki_builder/db/queries.py) is a two-tier cascade — exact-fold then a
+**Snowball stem-fallback** (reusing [stemming.py](../../src/anki_builder/stemming.py)) so inflected
+inputs absent as headwords still resolve (`comía`→`com`→*to eat*, preferring the verb over `comida`).
+The review app exposes an editable **Gloss** field; swap preserves an edited gloss or repopulates it.
+**60 tests pass** (added [test_dictionary.py](../../tests/test_dictionary.py); updated cards/anki/review).
+Still no network/Anki/API key in `pytest`. FreeDict is CC-BY-SA / GPL.
 
 ## Live verification — foundation pass ✅ PASSED (2026-06-01)
 
@@ -41,9 +58,10 @@ external services are mocked).
 | Tatoeba dump downloader (`fetch-dumps`) | ✅ Done |
 | Dump ingest + FTS index (`build-db`) | ✅ Done |
 | Tiered search → filter → rank → select pipeline | ✅ Done |
-| Card-field construction (incl. `SentenceBlanked`) | ✅ Done |
+| Card-field construction (incl. `SentenceBlanked`, `WordTranslation`) | ✅ Done |
+| Offline FreeDict glossary + inflection-proof `gloss_for` | ✅ Done |
 | `run` → enqueue to `review_queue` | ✅ Done |
-| Unit tests on a fixture DB | ✅ Done (41 passing) |
+| Unit tests on a fixture DB | ✅ Done (60 passing) |
 | AnkiConnect push (`connect.py`, `model.py`, `push.py`) | ✅ Done |
 | Audio mp3 download/cache | ✅ Done |
 | Review web app (FastAPI) | ✅ Done |
@@ -75,7 +93,7 @@ Legend: ✅ done · 🟡 partial/seam · ⛔ not started
 | --- | --- | --- |
 | D1 | Python 3.11+ | ✅ Built on 3.11+; env runs on 3.13 via uv |
 | D2 | Minimal local web review app | ✅ FastAPI app ([review/](../../src/anki_builder/review/)): play audio, swap candidate, edit, accept, delete, push |
-| D3 | One note type → 2 card templates; `SentenceBlanked` field | ✅ Fields ([cards.py](../../src/anki_builder/pipeline/cards.py)) + Anki model/templates ([anki/model.py](../../src/anki_builder/anki/model.py): 7 fields, Recognition + `{{type:Word}}` Production, fallback badge) |
+| D3 | One note type → 2 card templates; `SentenceBlanked` field | ✅ Fields ([cards.py](../../src/anki_builder/pipeline/cards.py)) + Anki model/templates ([anki/model.py](../../src/anki_builder/anki/model.py): **8 fields** incl. `WordTranslation` gloss; Card 1 Recognition = word + front audio → gloss/sentence/translation; Card 2 Production = gloss prompt + `{{type:Word}}`; fallback badge) |
 | D4 | OpenAI-SDK LLM + TTS, configurable model/base_url | 🟡 Config present ([config.py](../../src/anki_builder/config.py)); client not built (step 7) |
 | D5 | SQLite, queried locally; never hit the API per word | ✅ All per-word work is local SQL |
 | D6 | Base/translation language a parameter (default `eng`) | ✅ `[languages]` config |
