@@ -13,6 +13,7 @@ from anki_builder.db import queries
 
 _FIELDS = {
     "Word": "comer",
+    "WordTranslation": "to eat",
     "Sentence": "Quiero comer.",
     "SentenceBlanked": "Quiero ____.",
     "Translation": "I want to eat.",
@@ -81,20 +82,28 @@ def _patch_audio(monkeypatch, tmp_path):
 
 def test_model_definition_shape():
     m = model.model_definition("AnkiBuilder Spanish")
+    # 8 fields; Word first (AnkiConnect dedupe), WordTranslation second.
     assert m["inOrderFields"] == [
-        "Word", "Sentence", "SentenceBlanked", "Translation", "Audio", "Source", "Flag",
+        "Word", "WordTranslation", "Sentence", "SentenceBlanked", "Translation",
+        "Audio", "Source", "Flag",
     ]
     assert m["isCloze"] is False
     names = [t["Name"] for t in m["cardTemplates"]]
     assert names == ["Recognition", "Production"]
-    production = m["cardTemplates"][1]
+    recognition, production = m["cardTemplates"]
+    # Card 1 — Recognition: audio on the front (autoplays); gloss on the back.
+    assert "{{Audio}}" in recognition["Front"]
+    assert "{{WordTranslation}}" in recognition["Back"]
+    # Card 2 — Production: gloss prompt + blanked sentence + type-in on the front.
+    assert "{{WordTranslation}}" in production["Front"]
     assert "{{type:Word}}" in production["Front"]
     assert "{{SentenceBlanked}}" in production["Front"]
 
 
-def test_note_payload_carries_seven_fields_and_dedup_option():
+def test_note_payload_carries_all_fields_and_dedup_option():
     note = model.note_payload("Deck", "Model", _FIELDS, allow_duplicate=False)
     assert set(note["fields"]) == set(model.FIELDS)
+    assert note["fields"]["WordTranslation"] == "to eat"
     assert note["options"]["allowDuplicate"] is False
     assert note["deckName"] == "Deck"
 

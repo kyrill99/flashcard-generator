@@ -11,7 +11,7 @@ import sqlite3
 import pytest
 
 from anki_builder import db
-from anki_builder.stemming import fold_accents, stems_blob
+from anki_builder.stemming import fold_accents, stem_word, stems_blob
 
 TARGET = "spa"
 BASE = "eng"
@@ -59,6 +59,17 @@ _AUDIO = {1: "foo", 2: "foo", 3: "foo", 5: "foo",
 # Native-speaker signal (D13): `nat` is a spa native (level 5); `foo` is not.
 _USER_LANGS = [("nat", "spa", "5"), ("foo", "spa", "3")]
 
+# FreeDict glossary (headword, gloss, pos). `comer`/`comida`/`como` all stem to
+# `com`, so the stem-fallback tier of gloss_for must prefer the verb `comer`:
+# `comía` (absent as a headword) → stem `com` → "to eat", not "food"/"as, like".
+_GLOSSARY = [
+    ("comer", "to eat", "verb"),
+    ("comida", "food", "noun"),
+    ("como", "as, like", "conj"),
+    ("gato", "cat", "noun"),
+    ("rápido", "fast", "adj"),  # accented headword → accent-fold lookup test
+]
+
 
 def seed_corpus(conn: sqlite3.Connection) -> None:
     for sid, text in _SPA.items():
@@ -86,6 +97,12 @@ def seed_corpus(conn: sqlite3.Connection) -> None:
     conn.executemany(
         "INSERT INTO user_languages (username, lang, level) VALUES (?,?,?)",
         _USER_LANGS,
+    )
+    conn.executemany(
+        "INSERT INTO glossary (headword, headword_fold, headword_stem, gloss, pos)"
+        " VALUES (?,?,?,?,?)",
+        [(hw, fold_accents(hw.lower()), stem_word(hw), gloss, pos)
+         for hw, gloss, pos in _GLOSSARY],
     )
     conn.commit()
 
