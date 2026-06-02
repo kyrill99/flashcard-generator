@@ -152,6 +152,56 @@ def filtered_candidates(
     return candidates
 
 
+# --- glossary (the L1 word gloss / WordTranslation field) ------------------
+
+
+def _is_verb(pos: str | None, headword: str) -> bool:
+    """Heuristic: the POS names a verb, or the headword has an infinitive ending.
+
+    Inflection misses are overwhelmingly verbs, so this biases the stem-fallback
+    tier toward the verb headword when a stem collides (e.g. com -> comer/comida).
+    """
+    if pos and "v" in pos.lower():  # "verb", "v", "vt", "vi", "vb" ...
+        return True
+    return headword.lower().endswith(("ar", "er", "ir"))
+
+
+def gloss_for(conn: sqlite3.Connection, word: str) -> str:
+    """The short L1 gloss for a target word, inflection-proof. "" when unknown.
+
+    Two-tier cascade mirroring the D9 search cascade and `cards._match_priority`:
+
+    1. **Exact-fold** (precise) — folded-key match nails lemmas / uninflected
+       inputs (comer -> "to eat", gato -> "cat", comida -> "food"); `rowid` order
+       returns the first/primary sense.
+    2. **Stem-fallback** (recovers inflection) — only when tier 1 misses. All
+       headwords sharing the Snowball stem are ranked in Python by
+       ``(0 if verb else 1, len(headword))`` — prefer a verb headword, then the
+       shortest — so comía (stem `com`) -> comer -> "to eat", beating comida/como.
+
+    Reuses `fold_accents`/`stem_word` so the queried keys match the indexed ones.
+    """
+    folded = fold_accents(word.lower())
+    row = conn.execute(
+        "SELECT gloss FROM glossary WHERE headword_fold = ? ORDER BY rowid LIMIT 1",
+        (folded,),
+    ).fetchone()
+    if row is not None:
+        return row[0]
+
+    stem = stem_word(word)
+    rows = conn.execute(
+        "SELECT gloss, pos, headword FROM glossary WHERE headword_stem = ?",
+        (stem,),
+    ).fetchall()
+    if not rows:
+        return ""
+    best = min(
+        rows, key=lambda r: (0 if _is_verb(r["pos"], r["headword"]) else 1, len(r["headword"]))
+    )
+    return best["gloss"]
+
+
 def translations_for(
     conn: sqlite3.Connection, sentence_id: int, base_lang: str
 ) -> list[str]:

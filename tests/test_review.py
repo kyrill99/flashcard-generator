@@ -59,7 +59,31 @@ def test_queue_lists_pending(app_ctx):
     assert len(rows) == 1
     assert rows[0]["id"] == rid
     assert rows[0]["fields"]["Word"] == "como"
+    assert "WordTranslation" in rows[0]["fields"]  # the L1 gloss field is exposed
     assert len(rows[0]["candidates"]) == 2
+
+
+def test_swap_repopulates_gloss_when_absent(app_ctx):
+    # The fixture row has no gloss, so swap looks it up from the dictionary.
+    client, _cfg, rid = app_ctx
+    row = client.post(f"/api/queue/{rid}/swap", json={"candidate_index": 1}).json()
+    assert row["fields"]["WordTranslation"] == "as, like"  # gloss_for("como")
+
+
+def test_swap_preserves_edited_gloss(app_ctx):
+    # A human-edited gloss must survive a candidate swap (not be overwritten).
+    client, _cfg, rid = app_ctx
+    client.post(f"/api/queue/{rid}/edit", json={"fields": {"WordTranslation": "my gloss"}})
+    row = client.post(f"/api/queue/{rid}/swap", json={"candidate_index": 1}).json()
+    assert row["fields"]["WordTranslation"] == "my gloss"
+
+
+def test_edit_sets_gloss(app_ctx):
+    client, _cfg, rid = app_ctx
+    row = client.post(
+        f"/api/queue/{rid}/edit", json={"fields": {"WordTranslation": "to eat"}}
+    ).json()
+    assert row["fields"]["WordTranslation"] == "to eat"
 
 
 def test_swap_rebuilds_fields_and_audio(app_ctx):

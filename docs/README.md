@@ -26,7 +26,9 @@ docs/
 
 ### Testing
 - [testing/testing-plan.md](testing/testing-plan.md) — fixtures, the coverage
-  matrix (41 tests), manual/live verification, and known gaps.
+  matrix (60 tests), manual/live verification, and known gaps.
+- [testing/manual-verification.md](testing/manual-verification.md) — hands-on
+  checklist for the corpus→Anki features (audio, push, review app, steps 4–6).
 
 ### Specs (original inputs)
 - [specs/implementation_plan_v1.md](specs/implementation_plan_v1.md) —

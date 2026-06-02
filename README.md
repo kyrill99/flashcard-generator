@@ -1,7 +1,8 @@
 # Personal Anki Card Builder (Spanish, corpus-driven)
 
 Turn target Spanish words into review-ready Anki cards built from **real Tatoeba
-sentences + native-speaker audio** — a recognition card and a type-in/cloze
+sentences + native-speaker audio**, with a short L1 word gloss from an offline
+**FreeDict** dictionary — a contextual recognition card and a type-in/cloze
 production card per word. The LLM is only a fallback when Tatoeba has no good
 match. Every card passes a mandatory human review before it enters a deck.
 
@@ -17,8 +18,8 @@ match. Every card passes a mandatory human review before it enters a deck.
 uv sync                              # create .venv + install deps
 uv run pytest                        # run the test suite (no network/Anki needed)
 
-uv run anki-builder fetch-dumps      # download Tatoeba dumps (network)
-uv run anki-builder build-db         # one-time ingest into SQLite
+uv run anki-builder fetch-dumps      # download Tatoeba dumps + FreeDict spa-eng (network)
+uv run anki-builder build-db         # one-time ingest (corpus + glossary) into SQLite
 uv run anki-builder run --word comer # mine a word -> review_queue (prints a summary)
 uv run anki-builder review           # review gate at http://127.0.0.1:8000 (hear/swap/edit/accept)
 uv run anki-builder push             # push accepted cards -> Anki (needs Anki + AnkiConnect)
@@ -44,3 +45,8 @@ override defaults (deck, languages, paths, ranking weights, LLM/TTS settings).
 - Python ≥ 3.11, [uv](https://docs.astral.sh/uv/)
 - To `push`: Anki desktop + the AnkiConnect add-on (code `2055492159`) running
 - (Later pass — LLM/TTS fallback) an OpenAI-compatible API key
+
+## Attribution
+
+- Example sentences and audio: [Tatoeba](https://tatoeba.org/) (CC-BY 2.0 FR).
+- Word glosses: [FreeDict](https://freedict.org/) `spa-eng` (CC-BY-SA / GPL).

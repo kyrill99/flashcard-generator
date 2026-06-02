@@ -4,7 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-A personal CLI that mines Spanish Anki cards from the **Tatoeba** corpus: given a target word, it finds a real native-audio example sentence + its English translation and builds card fields, staging each into a `review_queue` for mandatory human review before any deck import. The LLM is only a fallback when Tatoeba has no usable match.
+A personal CLI that mines Spanish Anki cards from the **Tatoeba** corpus: given a target word, it finds a real native-audio example sentence + its English translation, looks up a short L1 word gloss from an offline **FreeDict** dictionary, and builds card fields, staging each into a `review_queue` for mandatory human review before any deck import. The LLM is only a fallback when Tatoeba has no usable match.
+
+The note type emits **two cards** from one record: Card 1 — *Contextual Recognition* (`Word` + autoplay sentence audio → gloss + sentence + translation); Card 2 — *Productive Cloze* (the L1 gloss prompt + blanked sentence + `{{type:Word}}`). The **8 fields** are `Word · WordTranslation · Sentence · SentenceBlanked · Translation · Audio · Source · Flag` (see [anki/model.py](src/anki_builder/anki/model.py)). `WordTranslation` is the L1 word gloss (`comer` → *to eat*), distinct from `Translation` (the full sentence translation).
 
 The repo dir is `flashcard-generator`, but the Python package is `anki_builder` and the console script is `anki-builder`.
 
@@ -14,12 +16,12 @@ The repo dir is `flashcard-generator`, but the Python package is `anki_builder` 
 
 ```bash
 uv sync                          # create .venv + install deps (uses uv.lock)
-uv run pytest                    # full suite (~41 tests, no network/Anki/API key needed)
+uv run pytest                    # full suite (~60 tests, no network/Anki/API key needed)
 uv run pytest -v                 # per-test names
 uv run pytest tests/test_search.py::test_like_catches_enclitic   # a single case
 
-uv run anki-builder fetch-dumps  # download Tatoeba dumps (network) → data/dumps/
-uv run anki-builder build-db     # one-time ingest dumps → data/tatoeba.db
+uv run anki-builder fetch-dumps  # download Tatoeba dumps + FreeDict spa-eng (network) → data/dumps/
+uv run anki-builder build-db     # one-time ingest dumps + glossary → data/tatoeba.db
 uv run anki-builder run --word comer            # mine one word → review_queue
 uv run anki-builder run --word comer --dry-run  # print only, write nothing
 uv run anki-builder run --words file.txt        # one word per line; '#' comments ok
@@ -39,7 +41,8 @@ word → search (tiered cascade)  db/queries.py search()   [D9]
      → filter + fan-out collapse db/queries.py filtered_candidates()  [D7a]
      → rank (short/simple first, native boost)  pipeline/rank.py  [D13]
      → select #1 or mark needs_fallback  pipeline/select.py  [D4 seam]
-     → build 7 card fields incl. SentenceBlanked  pipeline/cards.py  [D3]
+     → gloss lookup (FreeDict)  db/queries.py gloss_for()
+     → build 8 card fields incl. SentenceBlanked + WordTranslation  pipeline/cards.py  [D3]
      → enqueue row (status=pending)  db/queries.py enqueue()  [D11]
      → REVIEW gate (swap/edit/accept/delete)  review/server.py  [D2]   ← status=accepted
      → push (download audio, storeMediaFile, canAddNotes, addNote)  anki/push.py  [D10/D12]   ← status=pushed
@@ -55,6 +58,8 @@ word → search (tiered cascade)  db/queries.py search()   [D9]
 
 - **`stemming.py` is shared between ingest and query on purpose.** `build.py` writes `stems_blob(text)` into the FTS `stems` column; `queries.py` stems the query word with the same functions. If you change tokenisation/stemming/folding, indexed stems and query stems must stay identical or the stem tier silently stops matching — and you must rebuild the DB.
 
+- **The FreeDict glossary + inflection-proof `gloss_for` reuse the same stemmer** ([dictionary/freedict.py](src/anki_builder/dictionary/freedict.py), [db/build.py](src/anki_builder/db/build.py) `_load_glossary`, [db/queries.py](src/anki_builder/db/queries.py) `gloss_for`). `fetch-dumps` pulls the FreeDict `spa-eng` `.tar.xz` and extracts the `.tei`; `build-db` ingests it into the `glossary` table **only if the `.tei` is present** (optional, like `user_languages`), storing both `headword_fold` and `headword_stem` via the same `fold_accents`/`stem_word`. `gloss_for` is a two-tier cascade mirroring search: (1) exact-fold (nails lemmas: `comer`→*to eat*, `comida`→*food*), then (2) **stem-fallback** for inflected inputs absent as headwords (`comía`→stem `com`→*to eat*) — disambiguating stem collisions in Python by preferring a verb-POS headword (or `-ar/-er/-ir` ending), then the shortest. A miss returns `""`, which the review gate's editable gloss covers.
+
 - **`SentenceBlanked` mirrors the search tiers** ([cards.py](src/anki_builder/pipeline/cards.py) `_match_priority`): it blanks the target token using the same exact > accent-fold > folded-substring > stem priority, and blanks *all* tokens at the strongest matched level so a repeated word never leaves the answer visible.
 
 - **Fan-out collapse (D7a):** one Spanish sentence with N English translations must yield exactly **one** candidate, not N. `filtered_candidates()` does this with a scalar subquery picking the shortest translation as the display value; alternates are kept in `candidates_json` for the future review swap UI. It also requires *both* audio AND a translation — that filter is why a word can hit a tier yet still route to `needs_fallback`.
@@ -65,7 +70,7 @@ word → search (tiered cascade)  db/queries.py search()   [D9]
 
 - **`anki/push.py` is the single push path, shared by the CLI and the web app.** `push_accepted(conn, cfg, …)` reads `accepted` rows, downloads+stores the mp3 (`storeMediaFile`, deterministic name = idempotent media), dedups on `Word` via `canAddNotes` (prints `skipped (already in deck)`; `--force`/`allowDuplicate` overrides, D12), then `addNote`. `anki/connect.py::AnkiClient.invoke` is the **only** method that touches the wire — tests monkeypatch it, so there is no live Anki in `pytest`. `ensure_model` only *creates* the [anki/model.py](src/anki_builder/anki/model.py) note type (D3); it does not update an existing model's templates.
 
-- **The review app rebuilds card fields on swap/edit** ([review/server.py](src/anki_builder/review/server.py)): a *swap* reconstructs a `Candidate` from the stored `candidates_json` entry and re-runs `cards.build_card_fields`; an *edit* re-runs `blank_sentence` so the type-in `SentenceBlanked` stays consistent with an edited Word/Sentence. Endpoints are sync and open their own SQLite connection per request (WAL is on). `create_app(cfg)` is a factory so tests drive it with a `TestClient` over a fixture DB.
+- **The review app rebuilds card fields on swap/edit** ([review/server.py](src/anki_builder/review/server.py)): a *swap* reconstructs a `Candidate` from the stored `candidates_json` entry and re-runs `cards.build_card_fields` — preserving a human-edited `WordTranslation`, else repopulating it from `gloss_for`; an *edit* re-runs `blank_sentence` so the type-in `SentenceBlanked` stays consistent with an edited Word/Sentence (the `WordTranslation`/`Gloss` input flows through the generic field merge). Endpoints are sync and open their own SQLite connection per request (WAL is on). `create_app(cfg)` is a factory so tests drive it with a `TestClient` over a fixture DB.
 
 ## Config
 

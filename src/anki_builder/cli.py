@@ -22,6 +22,7 @@ from .anki import push as anki_push
 from .config import Config, load_config
 from .db import build as db_build
 from .db import queries
+from .dictionary import freedict
 from .pipeline import cards, rank, search, select
 from .review import server as review_server
 from .tatoeba import dumps as tatoeba_dumps
@@ -53,6 +54,18 @@ def cmd_fetch_dumps(args, cfg: Config) -> int:
         base_lang=cfg.languages.base_lang,
         force=args.force,
     )
+    # FreeDict gloss dictionary is optional — a failure here must not block the
+    # Tatoeba corpus (the gloss lookup degrades to "" / a one-field review edit).
+    try:
+        freedict.fetch_dict(
+            cfg.paths.dumps_dir,
+            target_lang=cfg.languages.target_lang,
+            base_lang=cfg.languages.base_lang,
+            force=args.force,
+        )
+    except Exception as exc:  # noqa: BLE001 — optional source, log and continue
+        print(f"WARNING: FreeDict dictionary fetch failed ({exc}); glosses disabled.",
+              file=sys.stderr)
     print(f"\nDumps ready in {cfg.paths.dumps_dir}")
     return 0
 
@@ -127,7 +140,10 @@ def cmd_run(args, cfg: Config) -> int:
             continue
 
         chosen = selection.chosen
-        fields = cards.build_card_fields(word, chosen, target_lang=target)
+        gloss = queries.gloss_for(conn, word)
+        fields = cards.build_card_fields(
+            word, chosen, target_lang=target, word_translation=gloss
+        )
         audio_filename = media_filename(chosen.sentence_id, target)
 
         candidate_payload = []
@@ -140,6 +156,7 @@ def cmd_run(args, cfg: Config) -> int:
         print(
             f"{word}: [{selection.tier}] #{chosen.sentence_id} "
             f"({len(selection.kept)} candidates)\n"
+            f"    gloss: {gloss or '(none — edit in review)'}\n"
             f"    ES: {chosen.spa_text}\n"
             f"    {base.upper()}: {chosen.translation}\n"
             f"    blank: {fields.sentence_blanked}\n"

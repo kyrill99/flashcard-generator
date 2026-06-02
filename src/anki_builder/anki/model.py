@@ -1,16 +1,20 @@
-"""The custom note type (D3): 7 fields, two card templates, CSS.
+"""The custom note type (D3): 8 fields, two card templates, CSS.
 
 One note type emits two cards from a single record (Anki's native Cloze type
-cannot do this): a **Recognition** card (word -> meaning) and a true type-in
-**Production** card (`{{type:Word}}` against the blanked sentence). The
+cannot do this): a **Recognition** card (word + audio -> meaning + example) and a
+true type-in **Production** card (the L1 gloss prompt + `{{type:Word}}` against
+the blanked sentence). `WordTranslation` is the short L1 word gloss (e.g. *to
+eat*), distinct from `Translation` (the full sentence translation). The
 `{{#Flag}}…{{/Flag}}` section renders a visible badge only on fallback cards.
 """
 
 from __future__ import annotations
 
-# Field order must match models.CardFields.as_dict() keys (D3).
+# Field order must match models.CardFields.as_dict() keys (D3). `Word` stays
+# first so AnkiConnect `Word` dedupe (D12) is unchanged.
 FIELDS = [
     "Word",
+    "WordTranslation",
     "Sentence",
     "SentenceBlanked",
     "Translation",
@@ -23,17 +27,20 @@ _FLAG_BADGE = (
     '{{#Flag}}<div class="flag">⚠ {{Flag}}</div>{{/Flag}}'
 )
 
-# Card 1 — Recognition: see the word, recall meaning + a real example + audio.
-_RECOGNITION_FRONT = '<div class="word">{{Word}}</div>'
+# Card 1 — Contextual Recognition (L2->L1): hear the native clip + see the word,
+# recall the gloss + a real example. Audio is on the front so Anki autoplays it.
+_RECOGNITION_FRONT = '<div class="word">{{Word}}</div>\n<div>{{Audio}}</div>'
 _RECOGNITION_BACK = (
     "{{FrontSide}}\n<hr id=answer>\n"
-    '<div class="translation">{{Translation}}</div>\n'
+    '<div class="gloss">{{WordTranslation}}</div>\n'
     '<div class="sentence">{{Sentence}}</div>\n'
-    "<div>{{Audio}}</div>\n" + _FLAG_BADGE
+    '<div class="translation">{{Translation}}</div>\n' + _FLAG_BADGE
 )
 
-# Card 2 — Production: type the target word into the blanked sentence.
+# Card 2 — Productive Cloze (L1->L2): the gloss prompts the word, typed into the
+# blanked sentence. Audio is absent from the front, so it autoplays on reveal.
 _PRODUCTION_FRONT = (
+    '<div class="gloss">{{WordTranslation}}</div>\n'
     '<div class="sentence">{{SentenceBlanked}}</div>\n{{type:Word}}'
 )
 _PRODUCTION_BACK = (
@@ -52,6 +59,7 @@ _CSS = """\
   background: #fff;
 }
 .word { font-size: 30px; font-weight: 600; }
+.gloss { font-weight: 600; margin: 8px 0; }
 .sentence { margin: 12px 0; }
 .translation { color: #444; }
 .flag {
@@ -99,9 +107,9 @@ def note_payload(
 ) -> dict:
     """Build an `addNote`/`canAddNotes` note object from card fields.
 
-    `fields` is CardFields.as_dict() — its keys already match :data:`FIELDS`, and
-    the `Audio` value carries the `[sound:…]` tag, so media is stored separately
-    (storeMediaFile) and the note just references it.
+    `fields` is CardFields.as_dict() — its keys already match :data:`FIELDS` (8
+    fields), and the `Audio` value carries the `[sound:…]` tag, so media is stored
+    separately (storeMediaFile) and the note just references it.
     """
     note_tags = list(tags) if tags else []
     if fields.get("Flag"):

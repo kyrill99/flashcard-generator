@@ -1,4 +1,4 @@
-"""Build the seven note-type fields (D3), including SentenceBlanked.
+"""Build the eight note-type fields (D3), including SentenceBlanked.
 
 `SentenceBlanked` blanks the target word's surface token(s) in the chosen
 sentence, accent-/case-/punctuation-insensitively. Matching mirrors the D9 tiers
@@ -73,11 +73,17 @@ def build_card_fields(
     candidate: Candidate,
     *,
     target_lang: str = "spa",
+    word_translation: str = "",
     flag: str = "",
 ) -> CardFields:
-    """Assemble CardFields from a chosen Tatoeba candidate (D3)."""
+    """Assemble CardFields from a chosen Tatoeba candidate (D3).
+
+    `word_translation` is the L1 word gloss (from `queries.gloss_for`); it defaults
+    to "" so a missing gloss degrades to a one-field human edit in review.
+    """
     return CardFields(
         word=word,
+        word_translation=word_translation,
         sentence=candidate.spa_text,
         sentence_blanked=blank_sentence(candidate.spa_text, word),
         translation=candidate.translation,

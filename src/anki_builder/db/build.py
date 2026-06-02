@@ -21,14 +21,15 @@ from pathlib import Path
 from typing import Iterable, Iterator
 
 from . import connect
-from ..stemming import fold_accents, stems_blob
+from ..dictionary import freedict
+from ..stemming import fold_accents, stem_word, stems_blob
 
 # Tatoeba uses MySQL-style \N for NULL in some columns.
 _NULL = "\\N"
 _BATCH = 5000
 
 # Tables we rebuild on each `build-db`; review_queue is intentionally preserved.
-_CORPUS_TABLES = ("sentences", "links", "audio", "user_languages")
+_CORPUS_TABLES = ("sentences", "links", "audio", "user_languages", "glossary")
 
 
 @dataclass
@@ -38,6 +39,7 @@ class IngestCounts:
     links: int = 0
     audio: int = 0
     user_languages: int = 0
+    glossary: int = 0
     malformed: int = 0  # rows skipped for a non-integer id (corrupt dump line)
 
     def as_dict(self) -> dict[str, int]:
@@ -47,6 +49,7 @@ class IngestCounts:
             "links": self.links,
             "audio": self.audio,
             "user_languages": self.user_languages,
+            "glossary": self.glossary,
             "malformed": self.malformed,
         }
 
@@ -59,6 +62,8 @@ def dump_paths(dumps_dir: Path, target_lang: str, base_lang: str) -> dict[str, P
         "links": dumps_dir / f"{target_lang}-{base_lang}_links.tsv",
         "audio": dumps_dir / f"{target_lang}_sentences_with_audio.tsv",
         "user_languages": dumps_dir / f"{target_lang}_user_languages.tsv",
+        # Optional FreeDict TEI (not in build_db's `required` set, like user_languages).
+        "glossary": freedict.dict_path(dumps_dir, target_lang, base_lang),
     }
 
 
@@ -285,6 +290,37 @@ def _load_user_languages(conn: sqlite3.Connection, path: Path, lang: str) -> int
     return count
 
 
+def _load_glossary(conn: sqlite3.Connection, path: Path) -> int:
+    """Insert FreeDict (headword, gloss, pos) rows with folded + stemmed keys.
+
+    Uses the SAME `stemming.py` functions as search/blanking, so the indexed
+    `headword_stem` and the stem `queries.gloss_for` queries with stay identical
+    (the invariant the search stem tier already depends on).
+    """
+    count = 0
+
+    def gen() -> Iterator[tuple]:
+        nonlocal count
+        for headword, gloss, pos in freedict.parse_tei(path):
+            count += 1
+            yield (
+                headword,
+                fold_accents(headword.lower()),
+                stem_word(headword),
+                gloss,
+                pos or None,
+            )
+
+    for batch in _batched(gen(), _BATCH):
+        conn.executemany(
+            "INSERT INTO glossary "
+            "(headword, headword_fold, headword_stem, gloss, pos) "
+            "VALUES (?, ?, ?, ?, ?)",
+            batch,
+        )
+    return count
+
+
 def build_db(
     db_path: str | Path,
     dumps_dir: str | Path,
@@ -336,6 +372,12 @@ def build_db(
             )
         else:
             log("user_languages dump absent — native-audio boost disabled.")
+
+        if paths["glossary"].exists():
+            log("Loading glossary (FreeDict word glosses) ...")
+            counts.glossary = _load_glossary(conn, paths["glossary"])
+        else:
+            log("glossary dump absent — gloss lookup disabled.")
 
         if counts.malformed:
             log(f"Skipped {counts.malformed:,} malformed row(s) (non-integer id).")
