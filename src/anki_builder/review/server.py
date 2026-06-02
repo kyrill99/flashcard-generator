@@ -171,8 +171,13 @@ def create_app(cfg: Config, *, allowed_hosts: set[str] | None = None) -> FastAPI
             if not 0 <= body.candidate_index < len(candidates):
                 raise HTTPException(status_code=400, detail="candidate index out of range")
             cand = _candidate_from_entry(candidates[body.candidate_index])
+            # Preserve a human-edited gloss; else repopulate from the dictionary.
+            gloss = (row.get("fields") or {}).get("WordTranslation") or queries.gloss_for(
+                c, row["word"]
+            )
             fields = cards.build_card_fields(
-                row["word"], cand, target_lang=target, flag=row.get("flag") or ""
+                row["word"], cand, target_lang=target,
+                word_translation=gloss, flag=row.get("flag") or "",
             )
             queries.update_row(
                 c,

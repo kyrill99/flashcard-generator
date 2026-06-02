@@ -82,6 +82,7 @@ function cardHTML(row) {
     <div class="row"><label>Sentence</label><input data-k="Sentence" value="${esc(f.Sentence)}"></div>
     <div class="row blank"><label>Blanked</label><span class="bk">${esc(f.SentenceBlanked)}</span></div>
     <div class="row"><label>Translation</label><input data-k="Translation" value="${esc(f.Translation)}"></div>
+    <div class="row"><label>Gloss</label><input data-k="WordTranslation" value="${esc(f.WordTranslation)}"></div>
     <div class="row"><label>Word</label><input data-k="Word" value="${esc(f.Word)}"></div>
     ${cands.length > 1 ? `<div class="row"><label>Swap</label><select class="swap">${opts}</select></div>` : ""}
     <div class="src">${esc(f.Source || "")} · status: ${esc(row.status)}</div>
@@ -143,6 +144,7 @@ document.addEventListener("change", async e => {
     card._row = row;
     card.querySelector('input[data-k="Sentence"]').value = row.fields.Sentence || "";
     card.querySelector('input[data-k="Translation"]').value = row.fields.Translation || "";
+    card.querySelector('input[data-k="WordTranslation"]').value = row.fields.WordTranslation || "";
     $(".bk", card).textContent = row.fields.SentenceBlanked || "";
     const a = card.querySelector("audio"); if (a) a.src = `/api/audio/${card.dataset.id}?t=${Date.now()}`;
     toast("Swapped");
