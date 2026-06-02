@@ -51,6 +51,20 @@ CREATE VIRTUAL TABLE IF NOT EXISTS sentences_fts USING fts5 (
     tokenize = "unicode61 remove_diacritics 0"
 );
 
+-- Offline FreeDict spa-eng word glosses (the L1 WordTranslation field). Stores
+-- BOTH a folded key (exact-fold lookup) and a Snowball-stemmed key — the stemmed
+-- key lets `gloss_for` recover inflected inputs (comía -> comer -> "to eat").
+-- Loaded only if the `.tei` dump is present; lookup degrades to "" when absent.
+CREATE TABLE IF NOT EXISTS glossary (
+    headword      TEXT NOT NULL,
+    headword_fold TEXT NOT NULL,
+    headword_stem TEXT NOT NULL,
+    gloss         TEXT NOT NULL,
+    pos           TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_glossary_fold ON glossary (headword_fold);
+CREATE INDEX IF NOT EXISTS idx_glossary_stem ON glossary (headword_stem);
+
 -- Resumable review gate (D11). One row per mined word awaiting human review.
 CREATE TABLE IF NOT EXISTS review_queue (
     id                 INTEGER PRIMARY KEY AUTOINCREMENT,
