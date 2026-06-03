@@ -50,6 +50,8 @@ class LLMConfig:
     base_url: str = "https://api.openai.com/v1"
     fallback_enabled: bool = True
     api_key: str | None = None
+    max_tokens: int = 400  # cap per chat completion (cost control)
+    max_words: int = 50  # cap on words extracted from one image (cost control)
 
 
 @dataclass(frozen=True)
@@ -90,7 +92,18 @@ def load_config(path: str | os.PathLike[str] | None = None) -> Config:
     runs out-of-the-box for unit tests and dry runs. Relative paths in
     ``[paths]`` are resolved against the config file's directory (or CWD when
     no file exists).
+
+    ``.env`` (CWD or a parent) is loaded best-effort so ``OPENAI_API_KEY`` is
+    honoured for the LLM/TTS fallback without exporting it manually. The TOML
+    never carries secrets (D4) — the key comes only from the environment.
     """
+    try:  # best-effort: .env is optional, and python-dotenv may be absent
+        from dotenv import load_dotenv
+
+        load_dotenv()
+    except ImportError:  # pragma: no cover — dotenv is a declared dep
+        pass
+
     if path is not None:
         config_path = Path(path)
     else:
@@ -145,6 +158,8 @@ def load_config(path: str | os.PathLike[str] | None = None) -> Config:
         base_url=llm_raw.get("base_url", llm_defaults.base_url),
         fallback_enabled=bool(llm_raw.get("fallback_enabled", llm_defaults.fallback_enabled)),
         api_key=os.environ.get("OPENAI_API_KEY"),
+        max_tokens=int(llm_raw.get("max_tokens", llm_defaults.max_tokens)),
+        max_words=int(llm_raw.get("max_words", llm_defaults.max_words)),
     )
 
     tts_defaults = TTSConfig()
