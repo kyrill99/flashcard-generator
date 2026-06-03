@@ -25,9 +25,11 @@ uv run anki-builder build-db     # one-time ingest dumps + glossary → data/tat
 uv run anki-builder run --word comer            # mine one word → review_queue
 uv run anki-builder run --word comer --dry-run  # print only, write nothing
 uv run anki-builder run --words file.txt        # one word per line; '#' comments ok
+uv run anki-builder run --word comer --force    # re-mine even if already queued (default: skip, prints "skipped (already in queue)")
 uv run anki-builder review                      # launch the review web app (D2 gate) → http://127.0.0.1:8000
 uv run anki-builder push                        # push accepted rows → Anki (needs Anki + AnkiConnect running)
 uv run anki-builder push --dry-run              # print Anki payloads, touch nothing
+uv run anki-builder push --force               # allow duplicates (sets allowDuplicate, overrides canAddNotes dedup, D12)
 ```
 
 There is no linter/formatter configured. `pytest` is the only gate. The suite mocks Anki (AnkiConnect `invoke`) and audio HTTP, so it never needs a live Anki or network.
