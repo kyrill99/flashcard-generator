@@ -8,7 +8,7 @@ from __future__ import annotations
 from anki_builder.anki import model
 from anki_builder.anki.connect import AnkiClient
 from anki_builder.anki.push import push_accepted
-from anki_builder.config import load_config
+from anki_builder.config import Config, PathsConfig, load_config
 from anki_builder.db import queries
 
 _FIELDS = {
@@ -209,3 +209,31 @@ def test_push_handles_empty_canaddnotes(corpus, monkeypatch, tmp_path):
     assert summary.pushed == 0 and summary.skipped == 1
     assert not summary.errors  # nothing escaped the per-row guard
     assert client.notes == []
+
+
+def test_push_fallback_row_stores_cached_tts(corpus, tmp_path):
+    """A fallback row (no sentence id) stores its cached TTS mp3 and adds the note."""
+    media = tmp_path / "media"
+    media.mkdir()
+    fname = "fallback_spa_zzqwx_abc12345.mp3"
+    (media / fname).write_bytes(b"TTS")  # the TTS clip generated during `run`
+    fields = {
+        "Word": "zzqwx", "WordTranslation": "g", "Sentence": "Una zzqwx aquí.",
+        "SentenceBlanked": "Una ____ aquí.", "Translation": "A zzqwx here.",
+        "Audio": f"[sound:{fname}]", "Source": "LLM fallback", "Flag": "fallback",
+    }
+    rid = queries.enqueue(
+        corpus, word="zzqwx", status="accepted", chosen_sentence_id=None,
+        candidates=None, fields=fields, audio_filename=fname, flag="fallback",
+    )
+    corpus.commit()
+    cfg = Config(paths=PathsConfig(
+        db_path=tmp_path / "db", dumps_dir=tmp_path / "d", media_cache=media
+    ))
+    client = FakeAnki()
+
+    summary = push_accepted(corpus, cfg, dry_run=False, force=False, client=client, log=lambda *_: None)
+
+    assert summary.pushed == 1 and not summary.errors
+    assert fname in client.media  # the cached TTS file, no download
+    assert queries.get_row(corpus, rid)["status"] == "pushed"

@@ -146,6 +146,26 @@ def test_index_page_served(app_ctx):
     assert "Review queue" in resp.text
 
 
+def test_audio_endpoint_serves_fallback_tts(app_ctx):
+    """A fallback row (no chosen_sentence_id) serves its cached TTS file (step 7)."""
+    client, cfg, _rid = app_ctx
+    fname = "fallback_spa_zzqwx_abc12345.mp3"
+    cfg.paths.media_cache.mkdir(parents=True, exist_ok=True)
+    (cfg.paths.media_cache / fname).write_bytes(b"TTS")
+    conn = db.connect(cfg.paths.db_path)
+    rid = queries.enqueue(
+        conn, word="zzqwx", status="pending", chosen_sentence_id=None,
+        candidates=None, fields={"Word": "zzqwx", "Flag": "fallback"},
+        audio_filename=fname, flag="fallback",
+    )
+    conn.commit()
+    conn.close()
+
+    resp = client.get(f"/api/audio/{rid}")
+    assert resp.status_code == 200
+    assert resp.content == b"TTS"
+
+
 # --- guard / status-machine hardening (M1/M2) ------------------------------
 
 

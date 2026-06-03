@@ -74,7 +74,7 @@ function cardHTML(row) {
     `<option value="${i}" ${c.sentence_id === row.chosen_sentence_id ? "selected" : ""}>`
     + `#${c.sentence_id} · ${esc(c.spa_text).slice(0, 60)}</option>`).join("");
   const flag = f.Flag ? `<span class="flag">${esc(f.Flag)}</span>` : "";
-  const audio = row.chosen_sentence_id
+  const audio = (row.chosen_sentence_id || row.audio_filename)
     ? `<audio controls src="/api/audio/${row.id}?t=${Date.now()}"></audio>` : "";
   return `<div class="card" data-id="${row.id}">
     <div class="word">${esc(f.Word || row.word)} ${flag}</div>

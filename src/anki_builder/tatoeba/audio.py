@@ -8,6 +8,8 @@ file and hands it to AnkiConnect's `storeMediaFile`.
 
 from __future__ import annotations
 
+import hashlib
+import re
 from pathlib import Path
 
 import httpx
@@ -31,6 +33,19 @@ def audio_fallback_url(audio_id: int) -> str:
 def media_filename(sentence_id: int, lang: str = "spa") -> str:
     """Deterministic filename for storeMediaFile dedupe (D10)."""
     return f"tatoeba_{lang}_{sentence_id}.mp3"
+
+
+def fallback_media_filename(word: str, lang: str = "spa") -> str:
+    """Deterministic filename for an LLM/TTS fallback clip (no sentence_id).
+
+    Mirrors `media_filename`'s idempotency: a filesystem-safe ASCII slug of the
+    word plus a short hash of the original (so accents/case/length never produce
+    an invalid or colliding name) — re-running yields the same file, so
+    `storeMediaFile` dedupes just like the Tatoeba path.
+    """
+    slug = re.sub(r"[^a-z0-9]+", "_", word.lower()).strip("_") or "word"
+    digest = hashlib.sha1(word.encode("utf-8")).hexdigest()[:8]
+    return f"fallback_{lang}_{slug}_{digest}.mp3"
 
 
 def sound_tag(sentence_id: int, lang: str = "spa") -> str:

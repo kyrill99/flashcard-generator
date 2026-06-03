@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import sqlite3
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from ..config import Config
 from ..db import queries
@@ -34,6 +35,33 @@ def _chosen_audio_id(row: dict) -> int | None:
     for c in row.get("candidates", []):
         if c.get("sentence_id") == row.get("chosen_sentence_id"):
             return c.get("audio_id")
+    return None
+
+
+def media_path_for_row(row: dict, cfg: Config) -> Path | None:
+    """Resolve the on-disk mp3 for a review row, or None when there is none.
+
+    Shared by push and the review audio endpoint so both treat Tatoeba and
+    fallback rows the same way:
+
+    - a Tatoeba row (`chosen_sentence_id`) → download+cache the native clip;
+    - a fallback row (no sentence id, but an `audio_filename` whose TTS file is
+      already cached) → that cached path, no network;
+    - otherwise None (no audio: the card is pushed/served silent).
+    """
+    sid = row.get("chosen_sentence_id")
+    if sid:
+        return audio.download_audio(
+            sid,
+            lang=cfg.languages.target_lang,
+            cache_dir=cfg.paths.media_cache,
+            audio_id=_chosen_audio_id(row),
+        )
+    fname = row.get("audio_filename")
+    if fname:
+        cached = Path(cfg.paths.media_cache) / fname
+        if cached.exists():
+            return cached
     return None
 
 
@@ -70,7 +98,6 @@ def push_accepted(
 
     client = client or AnkiClient(cfg.anki.connect_url)
     deck, model_name = cfg.anki.deck, cfg.anki.note_type
-    lang = cfg.languages.target_lang
 
     if not dry_run:
         try:
@@ -111,20 +138,14 @@ def push_accepted(
                     log(f"skipped (already in deck): {word}")
                     continue
 
-            # Store the native-speaker mp3 first so the [sound:…] tag resolves.
-            sid = row.get("chosen_sentence_id")
+            # Store the mp3 first (native clip or TTS fallback) so [sound:…] resolves.
             fname = row.get("audio_filename")
-            if sid and fname:
-                path = audio.download_audio(
-                    sid,
-                    lang=lang,
-                    cache_dir=cfg.paths.media_cache,
-                    audio_id=_chosen_audio_id(row),
-                )
+            if fname:
+                path = media_path_for_row(row, cfg)
                 if path is not None:
                     client.store_media_path(fname, path)
                 else:
-                    log(f"  warning: no audio for {word} (#{sid}); card pushed silent")
+                    log(f"  warning: no audio for {word}; card pushed silent")
 
             client.add_note(note)
             queries.mark_pushed(conn, row["id"])
