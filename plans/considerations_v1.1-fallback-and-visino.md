@@ -1,0 +1,7 @@
+### Technical Considerations for v1.1
+
+While the plan is structurally sound, there are a few edge cases worth planning for before executing the code:
+
+- **API Rate Limiting & Retries:** The plan relies on the `openai` Python SDK for both text generation and TTS^^. However, there is no explicit mention of handling HTTP 429 (Rate Limit) or 50x (Server Error) responses. If the `--image` command extracts a large list of rare words that all trigger the fallback path, you could easily hit concurrency or rate limits. Wrapping `_chat` and `_speech` with a lightweight exponential backoff (e.g., using the `tenacity` library or standard `try/except` loops) would harden the network seam.
+- **JSON Parsing Resiliency:** The `_chat` method uses `response_format={"type":"json_object"}` and expects `{"words":[...]}` for vision or a specific schema for sentences^^. While JSON mode forces the model to output valid JSON, it does not guarantee the _schema_ is correct. Adding a strict `try/except KeyError` block around the dictionary extraction in `generate_sentence` and `extract_words` will prevent pipeline crashes if the LLM hallucinates an unexpected key.
+- **Cost & Concurrency Control:** Because Tatoeba is the default, costs remain negligible^^. However, parsing high-resolution images or rapidly generating dozens of fallback TTS audio files can rack up API usage. You might consider adding a configurable limit to the number of words processed per `--image` run, or explicitly passing down a max-tokens parameter to the `LLMClient`.

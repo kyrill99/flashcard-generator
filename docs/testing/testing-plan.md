@@ -1,13 +1,14 @@
 # Testing Plan — current state
 
-Covers testing through the **two-card + gloss pass** (corpus→Anki, build steps
-1–6, plus the two-card note type and the FreeDict word-gloss lookup). The suite
-runs with **no network, no Anki, and no API key** — a fixture SQLite corpus
+Covers testing through **v1.1** (corpus→Anki build steps 1–6, the two-card note
+type + FreeDict gloss, **and** the step 7 LLM/TTS fallback + step 8 vision). The
+suite runs with **no network, no Anki, and no API key** — a fixture SQLite corpus
 stands in for the real dumps, and AnkiConnect / audio HTTP / the FreeDict
-download are all mocked. This is the primary gate before any live run.
+download / the OpenAI LLM+TTS calls are all mocked at their wire seams. This is
+the primary gate before any live run.
 
 ```bash
-uv run pytest            # 60 tests, ~3s
+uv run pytest            # 85 tests, ~4s
 uv run pytest -v         # per-test names
 uv run pytest tests/test_search.py::test_like_catches_enclitic   # one case
 ```
@@ -72,12 +73,17 @@ Maps directly to the plan's **Verification → Unit** checklist
 | AnkiConnect client (step 4) | `test_anki.py::test_ensure_model_is_idempotent` | `createModel` only when absent |
 | Push + dedup (D10/D12, step 4) | `test_anki.py::test_push_*` (6 cases) | adds note + stores media + marks `pushed`; `canAddNotes` False skips; `--force` overrides; `--dry-run` writes nothing; explicit `row_ids` still honour the accept gate; empty `canAddNotes` skips (no IndexError) |
 | Gloss lookup + dictionary | `test_dictionary.py` (7 cases) | `parse_tei` (first-sense quotes, skips no-trans); `gloss_for` exact / accent-fold / **stem-fallback prefers verb** (`comía`→*to eat*) / miss→`""`; `fetch_dict` extracts the `.tei` from a mocked `.tar.xz` + cache-skip |
-| Review app (D2, step 6) | `test_review.py` (14 cases) | queue list exposes `WordTranslation`; swap rebuilds fields/audio and **preserves an edited gloss else repopulates from `gloss_for`**; edit re-blanks + sets gloss; accept/delete flip status; push via mocked invoke; index served; CSRF + DNS-rebinding guards (M1); terminal-status / pending-promote push rules (M2) |
+| Review app (D2, step 6) | `test_review.py` (15 cases) | queue list exposes `WordTranslation`; swap rebuilds fields/audio and **preserves an edited gloss else repopulates from `gloss_for`**; edit re-blanks + sets gloss; accept/delete flip status; push via mocked invoke; index served; CSRF + DNS-rebinding guards (M1); terminal-status / pending-promote push rules (M2); **serves a fallback row's cached TTS file** |
+| LLM/TTS fallback (D4, step 7) | `test_fallback.py` (18 cases) | `generate_sentence`/`generate_gloss` parse canned JSON, raise `FallbackError` on bad/missing keys; `synthesize_to` writes the mp3 atomically; `generate_fallback` builds a `flag=fallback` card (blanks the sentence, prefers LLM gloss else `gloss_for`, writes the cached clip), and is **silent** (no abort) on TTS failure; `cmd_run` enqueues `pending/fallback` with a key, marks `needs_fallback` without one, and skips the LLM under `--no-fallback`/`--dry-run` |
+| LLM gloss fallback (step 7) | `test_fallback.py::test_resolve_gloss_*` · `test_cmd_run_llm_gloss_fills_dict_miss` | `resolve_gloss` returns a FreeDict hit without calling the LLM; on a dict miss with a client it returns the LLM gloss tagged `"llm"`; an LLM error degrades to `("","")`; `cmd_run` fills a dict-miss card's `WordTranslation` from the LLM |
+| Push fallback row (step 7) | `test_anki.py::test_push_fallback_row_stores_cached_tts` | a row with no `chosen_sentence_id` but a cached `audio_filename` stores the TTS file via `media_path_for_row` + adds the note |
+| Vision word-extraction (D4, step 8) | `test_vision.py` (5 cases) | `extract_words` parses `{"words":[…]}`, truncates to `max_words`, raises on bad schema / missing file; `_load_words --image` routes through it |
 
-**60 tests, all passing** (search 5 · filter_rank 5 · cards 9 · build 4 · queue
-2 · audio 5 · anki 9 · review 14 · dictionary 7). Every "Unit (fixture SQLite,
-no network)" item from the plan is covered, plus mocked coverage of
-Anki/audio/review and the FreeDict gloss lookup.
+**85 tests, all passing** (search 5 · filter_rank 5 · cards 9 · build 4 · queue
+2 · audio 5 · anki 10 · review 15 · dictionary 7 · fallback 18 · vision 5).
+Every "Unit (fixture SQLite, no network)" item from the plan is covered, plus
+mocked coverage of Anki/audio/review, the FreeDict gloss lookup + LLM gloss
+fallback, and the OpenAI LLM/TTS + vision seams.
 
 ---
 
@@ -106,9 +112,12 @@ part of `pytest`. For a full step-by-step checklist of the corpus→Anki feature
    Then:
    ```bash
    uv run anki-builder run --word comía --dry-run   # gloss STILL "to eat" (stem-fallback)
-   uv run anki-builder run --word zzqwx --dry-run   # → needs_fallback (deferred)
+   uv run anki-builder run --word zzqwx --dry-run   # → needs_fallback (deferred; no network in dry-run)
    uv run anki-builder run --word comer             # enqueues; rerun → "skipped (already in queue)"
    ```
+   With a key in `.env`, a live `run --word <rare>` instead generates a flagged
+   LLM fallback card (`pending`); `--no-fallback` forces the marker. See the
+   fallback + vision phases in [manual-verification.md](manual-verification.md).
 
 3. **Spot-check the inflection cascade** on real data: pick a verb whose
    infinitive is rare in the corpus but whose conjugations are common, and
@@ -145,8 +154,10 @@ These belong to later passes and have **no** tests yet:
   `httpx` transport, including the `.tar.xz` → `.tei` extraction.)*
 - A **live** AnkiConnect round-trip (the unit tests mock `invoke`; the real
   `createModel`/`addNote` path is exercised only by the manual happy path below).
-- LLM fallback sentence + TTS generation, and the `fallback` flag end-to-end
-  (step 7, deferred).
+- A **live** OpenAI round-trip for the fallback sentence + TTS and `run --image`
+  (the unit tests mock `_chat`/`_speech`; the real network path is exercised only
+  by the manual fallback/vision checks in
+  [manual-verification.md](manual-verification.md)).
 
 ---
 
@@ -155,8 +166,10 @@ These belong to later passes and have **no** tests yet:
 Re-run `uv run pytest` after any change to: the schema, `stemming.py`
 (tokeniser/stemmer/fold — it backs both the search stem tier **and** the
 `glossary` keys + `gloss_for`), the search SQL, the ranking weights' meaning,
-the blanking logic, the note-type fields/templates, the `gloss_for` cascade, or
-the FreeDict TEI parsing. The fixture corpus + glossary are the contract — if a
-behaviour change is intentional, update the fixture and the affected case
+the blanking logic, the note-type fields/templates, the `gloss_for` cascade, the
+FreeDict TEI parsing, the LLM/TTS prompts or JSON schema (`llm/`), the fallback
+assembly (`pipeline/fallback.py`, `cards.build_fallback_fields`), or the shared
+`media_path_for_row` resolver. The fixture corpus + glossary are the contract —
+if a behaviour change is intentional, update the fixture and the affected case
 together in the same edit. **Rebuild the DB** (`build-db`) after any change to
 `stemming.py` or the schema, or the indexed keys go stale.

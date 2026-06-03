@@ -1,7 +1,8 @@
 # Personal Anki Card Builder — example config.
 # Copy to config.toml and edit. config.toml is gitignored.
-# [languages], [paths], [ranking], and [anki] are all read now;
-# [llm] and [tts] are declared for the later LLM/TTS fallback pass (step 7).
+# All sections are read now: [languages], [paths], [ranking], [anki], and
+# [llm]/[tts] (the LLM/TTS fallback + vision pass, steps 7-8). OPENAI_API_KEY is
+# loaded from the environment / .env (never this file).
 
 [languages]
 # Target language to mine sentences for, and the base/translation language (D6).
@@ -34,13 +35,16 @@ connect_url = "http://127.0.0.1:8765"
 
 [llm]
 # D4 — OpenAI-compatible client. Model + base_url are config so you can point at
-# OpenAI, OpenRouter, or a local server. Must be vision-capable (v1.1 reuse).
+# OpenAI, OpenRouter, or a local server. Must be vision-capable (used for both
+# the fallback sentence and v1.1 image word-extraction).
 # OPENAI_API_KEY comes from the environment / .env, never this file.
 model = "gpt-4o-mini"
 base_url = "https://api.openai.com/v1"
-fallback_enabled = true
+fallback_enabled = true        # run generates an LLM card when Tatoeba has none
+max_tokens = 400               # cap per chat completion (cost control)
+max_words = 50                 # cap on words extracted from one `--image` run
 
 [tts]
-# Fallback audio only (Tatoeba audio is preferred). Spanish voice.
+# Fallback audio only (Tatoeba audio is preferred). Reuses the [llm] key/base_url.
 voice = "alloy"
 model = "gpt-4o-mini-tts"

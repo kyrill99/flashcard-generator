@@ -91,3 +91,31 @@ def build_card_fields(
         source=build_source(candidate),
         flag=flag,
     )
+
+
+def build_fallback_fields(
+    word: str,
+    spa_text: str,
+    translation: str,
+    *,
+    word_translation: str = "",
+    audio_filename: str | None = None,
+) -> CardFields:
+    """Assemble CardFields for an LLM-generated sentence (D4 fallback).
+
+    A synthetic Candidate can't reuse `build_card_fields` because `sound_tag`
+    keys the audio off a real Tatoeba `sentence_id`; a fallback card's audio is a
+    TTS file named independently. Keeping this here makes cards.py the single
+    place the eight fields are assembled. `flag="fallback"` renders the review
+    badge; `audio` is empty when TTS produced no file (card pushed silent).
+    """
+    return CardFields(
+        word=word,
+        word_translation=word_translation,
+        sentence=spa_text,
+        sentence_blanked=blank_sentence(spa_text, word),
+        translation=translation,
+        audio=f"[sound:{audio_filename}]" if audio_filename else "",
+        source="LLM fallback",
+        flag="fallback",
+    )

@@ -1,6 +1,40 @@
 # Implementation Status
 
-_Last updated: 2026-06-02_
+_Last updated: 2026-06-03_
+
+## LLM/TTS fallback + v1.1 vision ✅ (2026-06-03) — steps 7 & 8
+
+v1.1 is **complete**. The two remaining deferred pieces are built:
+
+- **Step 7 — LLM/TTS fallback.** A new `llm/` package mirrors the single-wire-seam
+  convention: [llm/client.py](../../src/anki_builder/llm/client.py) (`LLMClient._chat`
+  → `generate_sentence` + `extract_words`) and [llm/tts.py](../../src/anki_builder/llm/tts.py)
+  (`TTSClient._speech` → `synthesize_to`) are the only methods that touch OpenAI
+  (lazy import; the SDK's `max_retries` handles 429/5xx). [pipeline/fallback.py](../../src/anki_builder/pipeline/fallback.py)`::generate_fallback`
+  assembles a flagged card via [cards.py](../../src/anki_builder/pipeline/cards.py)`::build_fallback_fields`
+  (prefers the LLM gloss, else `gloss_for`) with a TTS clip. `cmd_run`'s
+  `needs_fallback` branch invokes it **during `run`** when `fallback_enabled` AND a
+  key are present (neither `--dry-run` nor `--no-fallback`), enqueuing
+  `status=pending, flag=fallback` so the card still passes the D2 review gate. TTS
+  failure → silent card; LLM/JSON failure (`FallbackError`) → the marked-only
+  `needs_fallback` path. `.env` is now loaded by `load_config` (python-dotenv).
+- **Step 8 — vision.** `run --image PATH` routes through
+  [llm/vision.py](../../src/anki_builder/llm/vision.py)`::extract_words` (same
+  `_chat` seam, JSON `{"words":[…]}`, capped at `cfg.llm.max_words`) into the
+  unchanged per-word pipeline — "nothing downstream changes".
+- **LLM gloss fallback.** FreeDict is small (~4.5k headwords), so common words
+  (`añadir`) have no gloss. [pipeline/gloss.py](../../src/anki_builder/pipeline/gloss.py)`::resolve_gloss`
+  tries FreeDict first and, on a miss, asks the LLM (`LLMClient.generate_gloss`)
+  for a short gloss at mining time — gated by the same key/offline checks as the
+  sentence fallback; dict hits never hit the network. `cmd_run` tags a
+  model-supplied gloss with `(LLM)`.
+- **Shared media path.** [anki/push.py](../../src/anki_builder/anki/push.py)`::media_path_for_row`
+  resolves either a Tatoeba clip (download+cache) or a fallback row's cached TTS
+  file; push and the review audio endpoint both use it, so fallback cards push and
+  play like any other.
+- New deps: `openai`, `python-dotenv`. New tests: `test_fallback.py`,
+  `test_vision.py` (+ fallback-row cases in `test_anki.py`/`test_review.py`), all
+  mocked at the wire seams. **85 tests pass**, still no network/Anki/key.
 
 ## Two-card design + inflection-proof gloss pass ✅ (2026-06-02)
 
@@ -43,10 +77,10 @@ Tracks what is built against the original architecture in
 The **foundation pass** delivered the testable core — build steps 1–3 plus the
 `fetch-dumps` downloader. A follow-up **corpus→Anki pass** added steps 4–6
 (AnkiConnect push, audio download/cache, and the FastAPI review gate), so the
-full `run → review → push` loop now works against a real Anki. Only the OpenAI
-LLM/TTS fallback (step 7) and the v1.1 vision stub (step 8) remain deferred. The
-`pytest` suite still runs with **no Anki, no API key, and no network** (all
-external services are mocked).
+full `run → review → push` loop works against a real Anki. The **fallback+vision
+pass** (2026-06-03) added steps 7–8 (the OpenAI LLM/TTS fallback and `run
+--image` word-extraction), completing v1.1. The `pytest` suite still runs with
+**no Anki, no API key, and no network** (all external services are mocked).
 
 ---
 
@@ -61,12 +95,12 @@ external services are mocked).
 | Card-field construction (incl. `SentenceBlanked`, `WordTranslation`) | ✅ Done |
 | Offline FreeDict glossary + inflection-proof `gloss_for` | ✅ Done |
 | `run` → enqueue to `review_queue` | ✅ Done |
-| Unit tests on a fixture DB | ✅ Done (60 passing) |
+| Unit tests on a fixture DB | ✅ Done (85 passing) |
 | AnkiConnect push (`connect.py`, `model.py`, `push.py`) | ✅ Done |
 | Audio mp3 download/cache | ✅ Done |
 | Review web app (FastAPI) | ✅ Done |
-| LLM fallback sentence + TTS | 🟡 Seam only (marks `needs_fallback`) |
-| v1.1 vision word-extraction stub | ⛔ Deferred |
+| LLM fallback sentence + TTS | ✅ Done (`llm/`, `pipeline/fallback.py`, runs during `run`) |
+| v1.1 vision word-extraction | ✅ Done (`run --image` → `llm/vision.py`) |
 
 Legend: ✅ done · 🟡 partial/seam · ⛔ not started
 
@@ -82,8 +116,8 @@ Legend: ✅ done · 🟡 partial/seam · ⛔ not started
 | 4 | `anki/connect.py` + `anki/model.py` + `anki/push.py`; `push --dry-run` | ✅ | [anki/](../../src/anki_builder/anki/) |
 | 5 | `tatoeba/audio.py` download/cache | ✅ | [tatoeba/audio.py](../../src/anki_builder/tatoeba/audio.py) (`download_audio` + CDN→audio_id fallback + cache) |
 | 6 | Review web app wired to `review_queue` | ✅ | [review/](../../src/anki_builder/review/) (FastAPI + single-page UI) |
-| 7 | `llm/client.py` + `llm/tts.py` + `fallback.py` | ⛔ | — |
-| 8 | `cli.py` entry points; `llm/vision.py` stub | 🟡 | [cli.py](../../src/anki_builder/cli.py) (`review`/`push` now live; no `vision.py`) |
+| 7 | `llm/client.py` + `llm/tts.py` + `fallback.py` | ✅ | [llm/](../../src/anki_builder/llm/), [pipeline/fallback.py](../../src/anki_builder/pipeline/fallback.py) (wired into `cmd_run`'s `needs_fallback` branch) |
+| 8 | `cli.py` entry points; `llm/vision.py` | ✅ | [cli.py](../../src/anki_builder/cli.py) (`run --image`/`--no-fallback`), [llm/vision.py](../../src/anki_builder/llm/vision.py) (functional, not a stub) |
 
 ---
 
@@ -94,7 +128,7 @@ Legend: ✅ done · 🟡 partial/seam · ⛔ not started
 | D1 | Python 3.11+ | ✅ Built on 3.11+; env runs on 3.13 via uv |
 | D2 | Minimal local web review app | ✅ FastAPI app ([review/](../../src/anki_builder/review/)): play audio, swap candidate, edit, accept, delete, push |
 | D3 | One note type → 2 card templates; `SentenceBlanked` field | ✅ Fields ([cards.py](../../src/anki_builder/pipeline/cards.py)) + Anki model/templates ([anki/model.py](../../src/anki_builder/anki/model.py): **8 fields** incl. `WordTranslation` gloss; Card 1 Recognition = word + front audio → gloss/sentence/translation; Card 2 Production = gloss prompt + `{{type:Word}}`; fallback badge) |
-| D4 | OpenAI-SDK LLM + TTS, configurable model/base_url | 🟡 Config present ([config.py](../../src/anki_builder/config.py)); client not built (step 7) |
+| D4 | OpenAI-SDK LLM + TTS, configurable model/base_url | ✅ [llm/client.py](../../src/anki_builder/llm/client.py) + [llm/tts.py](../../src/anki_builder/llm/tts.py) (lazy `openai`, `max_retries` for 429/5xx); same vision-capable model serves the fallback sentence + `run --image` word-extraction |
 | D5 | SQLite, queried locally; never hit the API per word | ✅ All per-word work is local SQL |
 | D6 | Base/translation language a parameter (default `eng`) | ✅ `[languages]` config |
 | D7 | Load base-language sentence texts too | ✅ Ingest loads `eng` (referenced rows only) |
@@ -152,11 +186,12 @@ The end-to-end personal loop now closes: `run` → **review (the D2 gate)** →
 - New deps (core): `fastapi`, `uvicorn`. Tests: `test_anki.py`, `test_audio.py`,
   `test_review.py` (all mocked — no live Anki/network). **41 tests pass.**
 
-## What's next (still deferred)
+## What's next (post-v1.1 ideas, not scheduled)
 
-1. **Step 7 — Fallback:** `llm/client.py` + `llm/tts.py` + `fallback.py`, wired
-   into `select`'s `needs_fallback` seam; flag the card in review. Adds the
-   `openai` dep and `.env`/`OPENAI_API_KEY` loading. `needs_fallback` rows are
-   marked-only until then.
-2. **Step 8 — v1.1 seam:** `llm/vision.py::extract_words(image)` stub feeding the
-   same pipeline.
+All v1 + v1.1 build steps are done. Possible later refinements (none started):
+
+1. **Higher-precision lemmatization** — swap Snowball stemming for spaCy
+   `es_core_news_sm` (documented D9 upgrade) for the search + gloss stem tiers.
+2. **Sense-aware dedup** — key on `Word`+`Sentence` or per-sense tags so homonyms
+   (`banco` bank/bench) aren't blocked by the `Word`-only `canAddNotes` check (D12).
+3. **Batch image input** — multiple images / a folder per `run --image`.

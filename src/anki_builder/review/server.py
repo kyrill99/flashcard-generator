@@ -151,13 +151,9 @@ def create_app(cfg: Config, *, allowed_hosts: set[str] | None = None) -> FastAPI
             row = _require(c, row_id)
         finally:
             c.close()
-        sid = row.get("chosen_sentence_id")
-        if not sid:
-            raise HTTPException(status_code=404, detail="row has no audio sentence")
-        audio_id = anki_push._chosen_audio_id(row)
-        path = audio.download_audio(
-            sid, lang=target, cache_dir=cfg.paths.media_cache, audio_id=audio_id
-        )
+        # The shared resolver handles both a Tatoeba clip (download+cache) and a
+        # fallback row's cached TTS file, so a reviewer can hear either.
+        path = anki_push.media_path_for_row(row, cfg)
         if path is None:
             raise HTTPException(status_code=404, detail="audio unavailable")
         return FileResponse(path, media_type="audio/mpeg")

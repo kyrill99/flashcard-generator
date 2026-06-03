@@ -23,13 +23,20 @@ from .config import Config, load_config
 from .db import build as db_build
 from .db import queries
 from .dictionary import freedict
-from .pipeline import cards, rank, search, select
+from .llm import vision
+from .llm.client import LLMClient
+from .pipeline import cards, fallback
+from .pipeline import gloss as gloss_resolver
+from .pipeline import rank, search, select
 from .review import server as review_server
 from .tatoeba import dumps as tatoeba_dumps
 from .tatoeba.audio import audio_url, media_filename
 
 
-def _load_words(args) -> list[str]:
+def _load_words(args, cfg: Config) -> list[str]:
+    if getattr(args, "image", None):
+        # v1.1 vision: extract words from an image into the same word pipeline.
+        return vision.extract_words(Path(args.image), cfg=cfg)
     if args.word:
         return [args.word]
     words: list[str] = []
@@ -106,8 +113,28 @@ def cmd_run(args, cfg: Config) -> int:
         conn.close()
         return 2
 
-    words = _load_words(args)
+    try:
+        words = _load_words(args, cfg)
+    except (FileNotFoundError, OSError) as exc:
+        src = args.image or args.words
+        print(f"ERROR: could not read {src!r}: {exc}", file=sys.stderr)
+        conn.close()
+        return 2
+    except Exception as exc:  # noqa: BLE001 — vision/LLM failure: clean exit, no traceback
+        print(f"ERROR: word extraction failed: {exc}", file=sys.stderr)
+        conn.close()
+        return 1
     enqueued = fallbacks = skipped = 0
+
+    # Eligible to call OpenAI this run? (key + fallback on, and not an offline run.)
+    llm_enabled = (
+        not args.dry_run
+        and not args.no_fallback
+        and cfg.llm.fallback_enabled
+        and bool(cfg.llm.api_key)
+    )
+    # One client reused for both the gloss fallback and the sentence fallback.
+    gloss_llm = LLMClient(cfg.llm) if llm_enabled else None
 
     for word in words:
         if not args.force and queries.word_in_queue(conn, word):
@@ -124,9 +151,45 @@ def cmd_run(args, cfg: Config) -> int:
         )
 
         if selection.needs_fallback:
-            print(f"{word}: no Tatoeba match — needs_fallback (deferred)")
             fallbacks += 1
-            if not args.dry_run:
+            if llm_enabled:
+                try:
+                    fb = fallback.generate_fallback(
+                        word, cfg=cfg, conn=conn, llm_client=gloss_llm
+                    )
+                except Exception as exc:  # noqa: BLE001 — degrade to the marker
+                    print(
+                        f"{word}: LLM fallback failed ({exc}); marked needs_fallback",
+                        file=sys.stderr,
+                    )
+                else:
+                    print(
+                        f"{word}: no Tatoeba match — LLM fallback generated "
+                        f"(flagged, pending review)\n"
+                        f"    ES: {fb.fields.sentence}\n"
+                        f"    {base.upper()}: {fb.fields.translation}\n"
+                        f"    audio: {fb.audio_filename or '(TTS failed — silent)'}"
+                    )
+                    queries.enqueue(
+                        conn,
+                        word=word,
+                        status="pending",
+                        chosen_sentence_id=None,
+                        candidates=None,
+                        fields=fb.fields.as_dict(),
+                        audio_filename=fb.audio_filename,
+                        flag="fallback",
+                    )
+                    continue
+
+            # Marked-only path: dry-run, --no-fallback, or no key/disabled.
+            if args.dry_run:
+                print(f"{word}: no Tatoeba match — needs_fallback (deferred)")
+            else:
+                print(
+                    f"{word}: no Tatoeba match — needs_fallback "
+                    "(set OPENAI_API_KEY and [llm].fallback_enabled to auto-generate)"
+                )
                 queries.enqueue(
                     conn,
                     word=word,
@@ -140,7 +203,9 @@ def cmd_run(args, cfg: Config) -> int:
             continue
 
         chosen = selection.chosen
-        gloss = queries.gloss_for(conn, word)
+        gloss, gloss_src = gloss_resolver.resolve_gloss(
+            conn, word, target_lang=target, base_lang=base, llm_client=gloss_llm
+        )
         fields = cards.build_card_fields(
             word, chosen, target_lang=target, word_translation=gloss
         )
@@ -153,10 +218,11 @@ def cmd_run(args, cfg: Config) -> int:
             entry["audio_url"] = audio_url(c.sentence_id, target)
             candidate_payload.append(entry)
 
+        gloss_note = {"llm": " (LLM)", "dict": "", "": ""}[gloss_src]
         print(
             f"{word}: [{selection.tier}] #{chosen.sentence_id} "
             f"({len(selection.kept)} candidates)\n"
-            f"    gloss: {gloss or '(none — edit in review)'}\n"
+            f"    gloss: {gloss or '(none — edit in review)'}{gloss_note}\n"
             f"    ES: {chosen.spa_text}\n"
             f"    {base.upper()}: {chosen.translation}\n"
             f"    blank: {fields.sentence_blanked}\n"
@@ -232,9 +298,15 @@ def build_parser() -> argparse.ArgumentParser:
     grp = p_run.add_mutually_exclusive_group(required=True)
     grp.add_argument("--word", help="A single word to mine")
     grp.add_argument("--words", help="Path to a file with one word per line")
+    grp.add_argument("--image", help="Path to an image; extract words via vision (v1.1)")
     p_run.add_argument("--dry-run", action="store_true", help="Print only; don't enqueue")
     p_run.add_argument(
         "--force", action="store_true", help="Mine even if the word is already queued"
+    )
+    p_run.add_argument(
+        "--no-fallback",
+        action="store_true",
+        help="Skip the LLM fallback; only mark needs_fallback (offline mining)",
     )
     p_run.set_defaults(func=cmd_run)
 
